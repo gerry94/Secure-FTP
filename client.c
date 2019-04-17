@@ -324,9 +324,9 @@ int sendFile(FILE* fp, char* net_buf, int s)
 void list(int sd)
 {
 	
-	//recvData(sd);
+	recvData(sd);
 	printf("File disponibili: \n");
-	//printf("%s\n", net_buf);
+	printf("%s\n", net_buf);
 
 }
 

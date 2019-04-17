@@ -193,17 +193,17 @@ int recvFile(unsigned char* buf)
     return 0; 
 }
 
-void send_data(char* buf){
+void send_data(char* buf, int sock){
 	len = strlen(buf);
 	lmsg = htons(len);
 	
-	if(send(sd, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
+	if(send(sock, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
 	{
 		printf("Errore di send(size)\n");
 		exit(1);
 	}
         
-        if(send(sd, (void*) buf, len, 0) == -1)
+        if(send(sock, (void*) buf, len, 0) == -1)
         {
         	printf("Errore di send(buf)\n");
         	exit(1);
@@ -233,8 +233,6 @@ void list(int sock)
 		{
 			if(check_txt(dir->d_name))
 				length += (strlen(dir->d_name)+1);
-			//if((strcmp(dir->d_name,"..") != 0) && (strcmp(dir->d_name,".") != 0))
-
 		}
 
 		length += 1;
@@ -253,21 +251,17 @@ void list(int sock)
 		while(((dir = readdir(d)) != NULL))
 		{
 			if(check_txt(dir->d_name)){
-			//if((strcmp(dir->d_name,"..") != 0) && (strcmp(dir->d_name,".") != 0)){
-				//printf("%s\n",dir->d_name);
-				//strncat(net_buf, dir->d_name, strlen(dir->d_name));
 				strcat(app,dir->d_name);
 				strcat(app,"\n");
 				
 			}
 		}
-		//printf("%s", app);
 		
 		memset(&net_buf, 0, sizeof(net_buf));
 		
 		strncpy(net_buf, app, length);
 		printf("%s", net_buf);
-		//send_data(net_buf);
+		send_data(net_buf, sock);
 
 		closedir(d);
 	}
