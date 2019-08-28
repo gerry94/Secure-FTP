@@ -1,0 +1,14 @@
+VERSIONE DEL 27/08/2019
+
+- Caricamento file sul server funzionante per qualsiasi file. Dim max circa 4,2 GB
+- I file vengono salvati nell'apposita cartella "./files"
+- Lista file disponibili funzionante
+- Download file da parte del client funzionante. Dim max circa 4.2 GB
+
+ATTENZIONE! COMANDO !quit NON ANCORA IMPLEMENTATO.
+Per uscire usare il comando di superquit (!squit) che stacca sia client che server.
+
+ISTRUZIONI PER COMPILARE
+g++ -g nome_file.cpp -o nome_file
+
+- C'è una foto da 5.8MB chiamata "ice.jpg" che potete inviare per testare il programma.
