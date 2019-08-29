@@ -130,7 +130,7 @@ void recv_file(string filename)
 	string path ="./files/";
 	path.append(filename);
 
-	fp.open(path.c_str(), ofstream::binary); //creo il file con il nome passato
+	fp.open(path.c_str(), ios::out | ios::binary); //creo il file con il nome passato
 	
 	if(!fp) { cerr<<"Errore apertura file."<<endl; }
 	fp.write(app_buf, ctx_len); //scrivo tutto app_buf (lungo ctx_len) nel file

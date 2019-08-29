@@ -100,7 +100,7 @@ while(1)
 						cout<<"Inserire il nome del file da inviare: "<<endl;
 						cin>>net_buf;
 						
-						fp.open(net_buf.c_str(), ifstream::binary); //apro il file in modalità binaria
+						fp.open(net_buf.c_str(), ios::in | ios::binary); //apro il file in modalità binaria
 				    	
 				    		if(!fp) { cerr<<"ERRORE: apertura file non riuscita."<<endl; break; }
 				    		else 
