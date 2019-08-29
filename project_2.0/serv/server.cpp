@@ -31,7 +31,6 @@ string string_buf, filename;
 int code;
 long long int ctx_len, lmsg;
 fstream fp;
-ifstream ifp;
 
 void sock_connect(int port)
 {
@@ -189,15 +188,15 @@ void list(int sock)
 
 void send_file(int sd)
 {
-	ifp.seekg(0, ifp.end); //scorro alla fine del file per calcolare la lunghezza (in Byte)
-	long long int fsize = ifp.tellg(); //fsize conta il num di "caratteri" e quindi il numero di byte --> occhio che se dim file > del tipo int ci sono problemi
-	ifp.seekg(0, ifp.beg); //mi riposizione all'inizio
+	fp.seekg(0, fp.end); //scorro alla fine del file per calcolare la lunghezza (in Byte)
+	long long int fsize = fp.tellg(); //fsize conta il num di "caratteri" e quindi il numero di byte --> occhio che se dim file > del tipo int ci sono problemi
+	fp.seekg(0, fp.beg); //mi riposizione all'inizio
 	
 	cout<<"Lunghezza file(Byte): "<<fsize<<endl;
 	char *buf = new char[fsize]; //buffer di appoggio per l'invio su socket
-	ifp.read(buf, fsize); //ora buf contiene il contenuto del file letto
+	fp.read(buf, fsize); //ora buf contiene il contenuto del file letto
 	
-	ifp.close();
+	fp.close();
 	
 	lmsg = htonl(fsize); //invio lunghezza file
 	cout<<"lmsg = htonl(fsize): "<<lmsg<<endl;//", sizeof(uint32_t): "<<sizeof(uint32_t)<<endl;
@@ -364,9 +363,9 @@ while(1){
 							string path ="./files/";
 							path.append(filename);
 							
-							ifp.open(path.c_str(), ifstream::binary); //apro il file in modalità binaria
+							fp.open(path.c_str(), ios::in | ios::binary); //apro il file in modalità binaria
 				    	
-					    		if(!ifp) { cerr<<"ERRORE: apertura file non riuscita."<<endl; break; }
+					    		if(!fp) { cerr<<"ERRORE: apertura file non riuscita."<<endl; break; }
 					    		else 
 					    		{
 								cout<<"Invio file in corso..."<<endl;

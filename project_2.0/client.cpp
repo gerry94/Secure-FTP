@@ -42,7 +42,6 @@ string net_buf;
 int stato, len;
 long long int lmsg;
 fstream fp; //puntatore al file da aprire
-ofstream ofp;
 
 int main()
 {
@@ -228,13 +227,13 @@ void recv_file(string filename, int new_sd)
 	
 	cout<<"Salvataggio file in corso. Attendere..."<<endl;
 
-	ofp.open(filename, ofstream::binary); //creo il file con il nome passato
+	fp.open(filename, ios::out | ios::binary); //creo il file con il nome passato
 	
-	if(!ofp) { cerr<<"Errore apertura file."<<endl; }
-	ofp.write(app_buf, fsize); //scrivo tutto app_buf (lungo fsize) nel file
+	if(!fp) { cerr<<"Errore apertura file."<<endl; }
+	fp.write(app_buf, fsize); //scrivo tutto app_buf (lungo fsize) nel file
 								
 	cout<<"Salvataggio file completato."<<endl;
-	ofp.close();
+	fp.close();
 	cout<<"File chiuso."<<endl;
 }
 
