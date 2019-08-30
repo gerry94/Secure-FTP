@@ -5,6 +5,7 @@
 #include <unistd.h> 
 #include <iostream>
 #include <string>
+#include <regex>
 #include <cstdio>
 #include <fstream>
 #include <errno.h>
@@ -25,6 +26,7 @@ void send_data(string, int);
 void send_file();
 void recvData(int);
 void recv_file(string,int);
+bool check_command_injection(string);
 
 //=====variabili socket ==========
 int porta, ret, sd;
@@ -98,7 +100,10 @@ while(1)
 					case 1:
 						cout<<"Inserire il nome del file da inviare: "<<endl;
 						cin>>net_buf;
-						
+						if(!check_command_injection(net_buf)){
+							cout<<"Carattere non consentito"<<endl;	
+							break;					
+						}
 						fp.open(net_buf.c_str(), ios::in | ios::binary); //apro il file in modalità binaria
 				    	
 				    		if(!fp) { cerr<<"ERRORE: apertura file non riuscita."<<endl; break; }
@@ -119,7 +124,11 @@ while(1)
 						
 						cout<<"Inserire il nome del file da scaricare: "<<endl;
 						cin>>net_buf;
-						
+						if(!check_command_injection(net_buf)){
+							cout<<"Carattere non consentito"<<endl;	
+							break;						
+						}						
+
 						send_data(net_buf, net_buf.length()); //invio nome al server e attendo conferma per il download
 						
 						//ricevo conferma esistenza file
@@ -428,3 +437,15 @@ void quit(int i)
 	cout<<"Client disconnesso."<<endl;
 	exit(1);
 }
+
+bool check_command_injection(string buf)
+{
+	regex b("[A-Za-z0-9.-_]+");
+	if(regex_match(buf, b))
+		return true;
+	else 
+		return false;
+}
+
+
+
