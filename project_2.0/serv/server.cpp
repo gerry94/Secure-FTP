@@ -172,11 +172,10 @@ void list(int sock)
 	{
 		while((dir = readdir(d)) != NULL) //legge due righe che non ci interessano, una ".." e l'altra "." ---> risolvere
 		{
+			if(dir->d_type == 8) {
 				lista_file.append(dir->d_name);
 				lista_file.append("\n");
-				
-			//if(check_txt(dir->d_name)) //restituiva solo i file.txt
-				//length += (strlen(dir->d_name)+1);
+			}
 		}
 		closedir(d);
 	}
