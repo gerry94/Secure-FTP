@@ -51,6 +51,14 @@ void sock_connect(int port)
     }
 }
 
+void quit(int i)
+{
+	close(i);
+	FD_CLR(i, &master);
+	cout<<"Socket "<<i<<" chiuso."<<endl;
+	code = 0;
+}
+
 void recvData(int sd)
 {
 	// Attendo dimensione del mesaggio                
@@ -373,6 +381,7 @@ while(1){
 							break;
 						}
 						case 3: //=============quit=============
+							quit(i);
 							break;
 						case 4: //============invio lista file disponibili========
 							list(i);

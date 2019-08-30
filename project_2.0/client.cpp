@@ -151,7 +151,7 @@ while(1)
 						break;
 					case 3:
 						send_status(stato);
-						cout<<"Comando non ancora implementato..."<<endl;
+						quit(i);
 						break;
 					case 4:
 						send_status(stato);
