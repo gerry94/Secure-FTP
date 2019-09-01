@@ -78,7 +78,7 @@ while(1)
     		{	
     			if(i == 0)
     			{
-    				cin>>net_buf;
+    				cin>>net_buf; //controllo secure coding?
     				
     				if(net_buf == "!help") {
 					stato=0;
@@ -87,6 +87,8 @@ while(1)
 					stato = 1;
 				else if(net_buf ==  "!get")
 					stato = 2;
+				else if(net_buf == "!remove")
+					stato = 6;
 				else if(net_buf == "!quit")
 					stato = 3;
 				else if(net_buf == "!list")
@@ -137,7 +139,7 @@ while(1)
 							char c;
 							cout<<"ATTENZIONE: Esiste già un file con questo nome. Sovrascriverlo? (s/n):"<<endl;
 							cin>>c;
-							if(c!='s') { cout<<"Input non valido."<<endl; break; }
+							if(c!='s') break;
 						}						
 
 						send_data(net_buf, net_buf.length()); //invio nome al server e attendo conferma per il download
@@ -177,6 +179,45 @@ while(1)
 						cout<<"Disconnessione in corso..."<<endl;
 						quit(i);
 						break;
+					case 6:
+					{
+						send_status(stato);
+						
+						cout<<"Inserire il nome del file da eliminare: "<<endl;
+						cin>>net_buf;
+						if(!check_command_injection(net_buf)){
+							cout<<"Carattere non consentito"<<endl;	
+							break;						
+						}
+						
+						send_data(net_buf, net_buf.length()); //invio nome al server e attendo conferma esistenza
+						
+						//ricevo conferma esistenza file
+						bool found;
+						if(recv(sd, &found, sizeof(found), 0) == -1) //sostituito new_sd con i
+						{
+						    cerr<<"Errore in fase di recv() relativa all'esistenza del file. Codice: "<<errno<<endl;
+						    exit(1);
+						}
+						
+						if(!found) { cout<<"File inesistente sul server!"<<endl; break; }
+						else
+						{
+							char c;
+							bool confirm = true;
+							cout<<"Il file sta per essere eliminato. Confermi? (s/n)"<<endl;
+							cin>>c;
+							if(c!='s') confirm = false;
+							
+							if(send(sd, (void*)&confirm, sizeof(confirm), 0)== -1)
+							{
+								cerr<<"Errore di send() relativa alla conferma di rimozione file. Codice:"<<errno<<endl;
+								exit(1);
+							}	
+						}
+						
+						break;
+					}
 					default:
 						cout<<"Comando non riconosciuto. Riprovare."<<endl;
 						break;
@@ -379,6 +420,7 @@ void printMsg()
 	cout<<"!help --> mostra l'elenco dei comandi disponibili "<<endl;
 	cout<<"!upload --> carica un file presso il server "<<endl;
 	cout<<"!get --> scarica un file dal server "<<endl;
+	cout<<"!remove --> elimina un file dal server "<<endl;
 	cout<<"!quit --> disconnette il client dal server ed esce "<<endl;
 	cout<<"!list --> visualizza elenco file disponibili sul server "<<endl;
 	cout<<"!squit --> SUPERQUIT: termina client e server "<<endl;

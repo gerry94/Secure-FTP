@@ -175,6 +175,22 @@ void send_data(string buf, int sock) {
         code = 0;
 }
 
+bool search_file(int sock, string filename)
+{
+	DIR *d;
+	struct dirent *dir;
+	d = opendir("./files");
+	if(d)
+	{
+		while((dir = readdir(d)) != NULL)
+				if(dir->d_name == filename)
+					return true;
+		closedir(d);
+	}
+	cout<<"File non trovato."<<endl;
+	return false;
+}
+
 void list(int sock)
 {
 	DIR *d;
@@ -345,22 +361,7 @@ while(1){
 							cout<<"Il client "<<new_sd<<" ha richiesto di scaricare il file: "<<filename<<endl;
 							
 							//1) controllo se il file esite
-							//bool found = check_file();
-							DIR *d;
-							struct dirent *dir;
-							bool found = false;
-							d = opendir("./files");
-							if(d)
-							{
-								while((dir = readdir(d)) != NULL)
-										if(dir->d_name == filename)
-										{
-											cout<<"File trovato."<<endl;
-											found=true;
-											break;
-										}
-								closedir(d);
-							}
+							bool found = search_file(i, filename);
 							
 							//2) mando l'esito al client
 							if(send(i, (void*)&found, sizeof(found), 0)== -1)
@@ -372,7 +373,7 @@ while(1){
 							//3) se non esiste mi fermo qua
 							if(!found) { cout<<"File inesistente."<<endl; break; }
 							
-							//4) se esiste, procedo all'invio !!! problemi in apertura file !!!
+							//4) se esiste, procedo all'invio
 							
 							string path ="./files/";
 							path.append(filename);
@@ -402,6 +403,47 @@ while(1){
 							cout<<"      @  @     @  @        @        @   @    @   @ @    @     @  @      @    "<<endl;
 							cout<<"@ @ @ @  @ @ @ @  @        @ @ @ @  @     @  @ @ @ @ @  @ @ @ @  @      @    "<<endl;
 							exit(1);
+						case 6: //===== !remove =======
+						{
+							recvData(new_sd);
+							
+							string filename = net_buf.c_str();
+							cout<<"Il client "<<new_sd<<" ha richiesto di eliminare il file: "<<filename<<endl;
+							
+							//1) controllo se il file esite
+							bool found = search_file(i, filename);
+							
+							//2) mando l'esito al client
+							if(send(i, (void*)&found, sizeof(found), 0)== -1)
+							{
+								cerr<<"Errore di send() relativa all'esistenza del file. Codice:"<<errno<<endl;
+								exit(1);
+							}
+							
+							//3) se non esiste mi fermo qua
+							if(!found) { cout<<"File inesistente."<<endl; break; }
+							
+							//4) attendo conferma
+							bool confirm;
+							if(recv(i, &confirm, sizeof(confirm), 0) == -1) //sostituito new_sd con i
+							{
+							    cerr<<"Errore in fase di recv() relativa alla conferma eliminazione file. Codice: "<<errno<<endl;
+							    exit(1);
+							}
+							
+							if(!confirm) { cout<<"Operazione annullata."<<endl; break; }
+							else
+							{
+								string path = "./files/";
+								path.append(filename);
+
+								if(remove(path.c_str()) == 0)
+									cout<<"File eliminato con successo."<<endl;
+								else cout<<"Errore eliminazione file. Codice: "<<errno<<endl;
+							}
+							
+							break;
+						}
 						default:
 							break;
 					
