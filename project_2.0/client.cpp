@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <fstream>
 #include <errno.h>
+#include <dirent.h>
 
 using namespace std;
 
@@ -27,6 +28,7 @@ void send_file();
 void recvData(int);
 void recv_file(string,int);
 bool check_command_injection(string);
+bool check_file_existance(string);
 
 //=====variabili socket ==========
 int porta, ret, sd;
@@ -97,7 +99,7 @@ while(1)
 				{
 					case 0: //stato neutro
 						break;
-					case 1:
+					case 1: //====== !upload ==========
 						cout<<"Inserire il nome del file da inviare: "<<endl;
 						cin>>net_buf;
 						if(!check_command_injection(net_buf)){
@@ -119,7 +121,7 @@ while(1)
 				    		}
 				    		
 						break;
-					case 2:
+					case 2: //========== !get ===============
 						send_status(stato);
 						
 						cout<<"Inserire il nome del file da scaricare: "<<endl;
@@ -127,6 +129,15 @@ while(1)
 						if(!check_command_injection(net_buf)){
 							cout<<"Carattere non consentito"<<endl;	
 							break;						
+						}
+						
+						//controllo esistenza file in locale
+						if(check_file_existance(net_buf.c_str()))
+						{
+							char c;
+							cout<<"ATTENZIONE: Esiste già un file con questo nome. Sovrascriverlo? (s/n):"<<endl;
+							cin>>c;
+							if(c!='s') { cout<<"Input non valido."<<endl; break; }
 						}						
 
 						send_data(net_buf, net_buf.length()); //invio nome al server e attendo conferma per il download
@@ -139,7 +150,7 @@ while(1)
 						    exit(1);
 						}
 						
-						if(!found) { cout<<"File inesistente!"<<endl; break; }
+						if(!found) { cout<<"File inesistente sul server!"<<endl; break; }
 						else
 						{
 							cout<<"Il file è disponibile per il download."<<endl;
@@ -232,8 +243,13 @@ void recv_file(string filename, int new_sd)
 		count++;
 	}
 	cout<<endl;
-	cout<<"Ricevuto file in "<<count<<" pacchetti, per un totale di "<<ricevuti<<" bytes."<<endl;
+	cout<<"Ricevuto file in "<<count<<" pacchetti, per un totale di "<<ricevuti<<" Bytes."<<endl;
 	
+	if(ricevuti != fsize)
+	{
+		cerr<<"Errore di trasferimento."<<endl;
+		return;
+	}
 	cout<<"Salvataggio file in corso. Attendere..."<<endl;
 
 	fp.open(filename, ios::out | ios::binary); //creo il file con il nome passato
@@ -447,5 +463,18 @@ bool check_command_injection(string buf)
 		return false;
 }
 
-
+bool check_file_existance(string buf) //return true se il file esiste
+{
+	DIR *d;
+	struct dirent *dir;
+	d = opendir(".");
+	if(d)
+	{
+		while((dir = readdir(d)) != NULL)
+			if(dir->d_type == 8)
+				if(dir->d_name == buf) return true;
+	closedir(d);
+	}
+	return false;
+}
 

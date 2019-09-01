@@ -132,6 +132,13 @@ void recv_file(string filename)
 	}
 	cout<<endl;
 	cout<<"Ricevuto file in "<<count<<" pacchetti, per un totale di "<<ricevuti<<" bytes."<<endl;
+	
+	if(ricevuti != ctx_len)
+	{
+		cerr<<"Errore di trasferimento."<<endl;
+		return;
+	}
+	
 	cout<<"Salvataggio file in corso. Attendere..."<<endl;
 	
 	string path ="./files/";
