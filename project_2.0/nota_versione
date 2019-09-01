@@ -3,6 +3,7 @@ VERSIONE DEL 01/09/2019
 - Controllo byte_ricevuti == byte_attesi
 - Conferma di sovrascrivere file già esistente con il comando !get
 - Aggiunto comando !remove
+- Il server accetta 1 sola connessione
 
 VERSIONE DEL 30/08/2019
 

@@ -17,6 +17,7 @@ using namespace std;
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
 
+//========prototipi funzioni============
 void send_status(int);
 void printMsg();
 void send_port();
@@ -46,6 +47,10 @@ string net_buf;
 int stato, len;
 long long int lmsg;
 fstream fp; //puntatore al file da aprire
+
+//==========variabili cybersecurity===========
+unsigned int seqno; //numero di sequenza pacchetti
+//============================================
 
 int main()
 {

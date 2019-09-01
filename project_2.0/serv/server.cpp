@@ -22,22 +22,25 @@ unsigned int len;
 struct sockaddr_in my_addr, cl_addr;
 fd_set master, read_fds;
 int fdmax;
+bool busy = false; //serve per accettare una sola connessione
 //================================
 
 string net_buf;
-//unsigned char tmp_buf[NET_BUF_SIZE];
 
-string string_buf, filename;
+string filename;
 int code;
 long long int ctx_len, lmsg;
 fstream fp;
 
+//==========variabili cybersecurity===========
+unsigned int seqno; //numero di sequenza pacchetti
+//============================================
 void sock_connect(int port)
 {
 /* Creazione socket */
     sd = socket(AF_INET, SOCK_STREAM, 0);
     /* Creazione indirizzo di bind */
-    //memset(&my_addr, 0, sizeof(my_addr)); // Pulizia 
+
     my_addr.sin_family = AF_INET;
     my_addr.sin_port = htons(port);
     my_addr.sin_addr.s_addr = INADDR_ANY;
@@ -300,7 +303,7 @@ while(1){
     	{
     		if(FD_ISSET(i, &read_fds))
     		{
-    			if(i == sd)
+    			if((i == sd) && !busy) //busy serve per accettare una sola connessione
     			{
     				len = sizeof(cl_addr);
     				// Accetto nuove connessioni
@@ -321,6 +324,7 @@ while(1){
 					    fdmax = new_sd;
 					    
 				        cout<<"SERVER: accettata nuova connessione con il client da "<<inet_ntoa(cl_addr.sin_addr)<<" sul socket "<<new_sd<<". "<<endl;
+				        busy = true;
 				        
 				    }
     			}
