@@ -30,6 +30,9 @@ void recvData(int);
 void recv_file(string,int);
 bool check_command_injection(string);
 bool check_file_existance(string);
+int check_seqno(uint32_t);
+void send_seqno(int);
+void recv_seqno(int);
 
 //=====variabili socket ==========
 int porta, ret, sd;
@@ -50,6 +53,7 @@ fstream fp; //puntatore al file da aprire
 
 //==========variabili cybersecurity===========
 unsigned int seqno; //numero di sequenza pacchetti
+uint32_t seqno_r; //num seq ricevuto
 //============================================
 
 int main()
@@ -111,18 +115,39 @@ while(1)
 							cout<<"Carattere non consentito"<<endl;	
 							break;					
 						}
-						fp.open(net_buf.c_str(), ios::in | ios::binary); //apro il file in modalità binaria
-				    	
-				    		if(!fp) { cerr<<"ERRORE: apertura file non riuscita."<<endl; break; }
 				    		else 
 				    		{
-				    			send_status(stato);
-				    			cout<<"Apertura file eseguita correttamente."<<endl;
+				    			//controllare esistenza file
+				    			if(!check_file_existance(net_buf)) { cout<<"File inesistente."<<endl; break; }
 				    			
-				    			
+				    			send_status(stato);				    			
 				    			send_data(net_buf, net_buf.length()); //invio il nome file
 				    			
-				    			send_file(); //invio il file vero e proprio			
+				    			//ricevo conferma esistenza file
+				    			recv_seqno(sd);
+				    			if(check_seqno(seqno_r) == -1) exit(1);
+				    			
+							bool found;
+							if(recv(sd, &found, sizeof(found), 0) == -1) //sostituito new_sd con i
+							{
+							    cerr<<"Errore in fase di recv() relativa all'esistenza del file. Codice: "<<errno<<endl;
+							    exit(1);
+							}
+							seqno++;
+							
+							if(found) //esiste già un file con questo nome sul server
+							{
+								cout<<"Esiste già un file "<<net_buf<<" sul server. Rinominare il file e riprovare."<<endl;
+								break;
+							}
+				    			else
+				    			{
+				    				fp.open(net_buf.c_str(), ios::in | ios::binary);			    
+				    				if(!fp) { cerr<<"ERRORE: apertura file non riuscita."<<endl; break; }
+				    				cout<<"Apertura file eseguita correttamente."<<endl;
+				    				
+				    				send_file(); //invio il file vero e proprio			
+				    			}
 				    		}
 				    		
 						break;
@@ -146,6 +171,8 @@ while(1)
 						}						
 
 						send_data(net_buf, net_buf.length()); //invio nome al server e attendo conferma per il download
+						recv_seqno(sd);
+						if(check_seqno(seqno_r) == -1) exit(1);
 						
 						//ricevo conferma esistenza file
 						bool found;
@@ -154,6 +181,7 @@ while(1)
 						    cerr<<"Errore in fase di recv() relativa all'esistenza del file. Codice: "<<errno<<endl;
 						    exit(1);
 						}
+						seqno++;
 						
 						if(!found) { cout<<"File inesistente sul server!"<<endl; break; }
 						else
@@ -169,7 +197,7 @@ while(1)
 						send_status(stato);
 						quit(i);
 						break;
-					case 4:
+					case 4: //comando !List
 						send_status(stato);
 						recvData(sd);
 						cout<<"======= FILE DISPONIBILI ========"<<endl;
@@ -195,11 +223,25 @@ while(1)
 	return 0;
 }
 
+int check_seqno(uint32_t sr)
+{
+	if(sr != seqno) //gestire la chiusura della connessione per bene
+	{
+		cerr<<"Numeri di sequenza fuori fase!"<<endl;
+		return -1;
+	}
+	else return 0;
+}
+
 void recv_file(string filename, int new_sd)
 {
-	if(recv(new_sd, &lmsg, sizeof(uint64_t), MSG_WAITALL) == -1) {
-		cerr<<"Errore in fase di ricezione lunghezza file. Codice: "<<errno<<endl; exit(1); }
-      
+	recv_seqno(new_sd);
+	if(recv(new_sd, &lmsg, sizeof(uint64_t), MSG_WAITALL) == -1)
+	{
+		cerr<<"Errore in fase di ricezione lunghezza file. Codice: "<<errno<<endl;
+		exit(1); 
+	}
+	seqno++;
 	long long int fsize = ntohl(lmsg); // Rinconverto in formato host
 	cout<<"Lunghezza file (Bytes): "<<fsize<<endl;							
 	char *buf = new char[CHUNK];
@@ -209,19 +251,24 @@ void recv_file(string filename, int new_sd)
 	
 	long long int mancanti = fsize;
 	long long int ricevuti = 0;
-	int count=0;
-	char *app_buf = buf; //app punta a buf[0]
-	int progress = 0;
-	
-	string path ="./files/";
-	path.append(filename);
+	int count=0, progress = 0;
 
-	fp.open(path.c_str(), ios::out | ios::binary); //creo il file con il nome passato
+	fp.open(filename.c_str(), ios::out | ios::binary); //creo il file con il nome passato
 	
 	if(!fp) { cerr<<"Errore apertura file."<<endl; exit(1); }
 	
 	while((mancanti-CHUNK) > 0)
 	{
+		//ricevo numero di sequenza dal server
+		recv_seqno(new_sd);
+		
+		if(check_seqno(seqno_r) == -1)
+		{
+			fp.close();
+			remove(filename.c_str()); //elimino il file
+			exit(1); //gestire meglio la chiusura
+		}
+		
 		int n = recv(new_sd, (void*)buf, CHUNK, MSG_WAITALL);
 		if(n == -1)
 		{
@@ -231,7 +278,7 @@ void recv_file(string filename, int new_sd)
 
 		ricevuti += n;
 		mancanti -= n;
-		
+		seqno++;
 		fp.write(buf, CHUNK);
 
 		//percentuale di progresso
@@ -245,6 +292,15 @@ void recv_file(string filename, int new_sd)
 		delete[] buf;
 		char *buf = new char[mancanti];
 		
+		//ricevo numero di sequenza dal client
+		recv_seqno(new_sd);
+		if(check_seqno(seqno_r) == -1)
+		{
+			fp.close();
+			remove(filename.c_str()); //elimino il file
+			exit(1); //gestire meglio la chiusura
+		}
+		
 		int n = recv(new_sd, (void*)buf, mancanti, MSG_WAITALL);
 		if(n == -1)
 		{
@@ -253,7 +309,7 @@ void recv_file(string filename, int new_sd)
 		}
 		ricevuti += n;
 		fp.write(buf, mancanti);
-		
+		seqno++;
 		progress = (ricevuti*100)/fsize;
 		cout<<"\r"<<progress<<"%";
 
@@ -268,7 +324,7 @@ void recv_file(string filename, int new_sd)
 		return;
 	}
 							
-	cout<<"Salvataggio file completato in "<<path<<endl;
+	cout<<"Salvataggio file completato."<<endl;
 	fp.close();
 	cout<<"File chiuso."<<endl;
 }
@@ -284,11 +340,13 @@ void send_file()
 	
 	lmsg = htonl(fsize); //invio lunghezza file
 	
+	send_seqno(sd);
 	if(send(sd, &lmsg, sizeof(uint64_t), 0) == -1)
 	{
 		cerr<<"Errore di send(size)."<<endl;
 		exit(1);
 	}
+	seqno++;
 	
 	cout<<"Invio del file: "<<net_buf<<" in corso..."<<endl;
 	
@@ -298,6 +356,9 @@ void send_file()
 
 	while((mancanti-CHUNK)>0)
 	{
+		//invio il numero di sequenza
+		send_seqno(sd);
+		
 		fp.read(buf, CHUNK); //ora buf contiene il contenuto del file letto
 		int n = send(sd, (void*)buf, CHUNK, 0);
 		if(n == -1)
@@ -305,9 +366,8 @@ void send_file()
 			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
 			exit(1);
 		}
-		count++;
-		
-		//buf += CHUNK;
+		count++; seqno++;
+
 		mancanti -= n;
 		inviati += n;
 		
@@ -318,6 +378,10 @@ void send_file()
 	{
 		delete[] buf; //occhio !!
 		char *buf = new char[mancanti];
+		
+		//invio il numero di sequenza
+		send_seqno(sd);
+		
 		fp.read(buf, mancanti); //ora buf contiene il contenuto del file letto
 		
 		int n = send(sd, (void*)buf, mancanti, 0);
@@ -326,7 +390,7 @@ void send_file()
 			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
 			exit(1);
 		}
-		count++;
+		count++; seqno++;
 		inviati += n;
 		progress = (inviati*100)/fsize;
 		cout<<"\r"<<progress<<"%";	
@@ -338,24 +402,53 @@ void send_file()
 
 void recvData(int sd)
 {
+	recv_seqno(sd);
+	if(check_seqno(seqno_r) == -1) exit(1);
+	
 	// Attendo dimensione del mesaggio                
 	if(recv(sd, (void*)&lmsg, sizeof(uint32_t), 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
 		exit(1);
 	}
-	
+	seqno++;
 	len = ntohl(lmsg); // Rinconverto in formato host
-
+	
+	recv_seqno(sd);
+	if(check_seqno(seqno_r) == -1) exit(1);
+	
 	if(recv(sd, (void*)net_buf.c_str(), len, MSG_WAITALL) == -1)
 	{
 		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 		exit(1);
 	}
+	seqno++;
+}
+void send_seqno(int sd)
+{
+	//invio seqno
+	if(send(sd, (void*)&seqno, sizeof(uint32_t), 0)== -1)
+	{
+		cerr<<"Errore di send(seqno). Codice: "<<errno<<endl;
+		exit(1);
+	}
+}
+
+void recv_seqno(int sd)
+{
+	//ricevo numero di sequenza dal client
+	if(recv(sd, &seqno_r, sizeof(uint32_t), 0) == -1)
+	{
+	    cerr<<"Errore di recv(seqno). Codice: "<<errno<<endl;
+	    exit(1);
+	}
 }
 
 void send_data(string buf, int buf_len)
-{		
+{
+	//invio seqno
+	send_seqno(sd);
+			
 	//len = strlen(buf)+48; //32 è la dim del MAC + 16 la dim di AES = 48
 	//len = buf.length();
 	lmsg = htons(buf_len);
@@ -365,23 +458,30 @@ void send_data(string buf, int buf_len)
 		cerr<<"Errore di send(size)."<<endl;
 		exit(1);
 	}
-
+	seqno++;
+	
+	send_seqno(sd);
         if(send(sd, (void*)buf.c_str(), buf_len, 0) == -1)
         {
         	cerr<<"Errore di send(buf)."<<endl;;
         	exit(1);
         }
-        
+        seqno++;        
         stato = -1;
 }
 
 void send_status(int stato)
 {
+	//invio seqno
+	send_seqno(sd);
+	
 	if(send(sd, (void*)&stato, sizeof(stato), 0)== -1)
 	{
 		cerr<<"Errore di send_status():"<<endl;
 		exit(1);
 	}
+	
+	seqno++;
 }
 
 void printMsg()

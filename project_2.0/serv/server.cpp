@@ -34,6 +34,7 @@ fstream fp;
 
 //==========variabili cybersecurity===========
 unsigned int seqno; //numero di sequenza pacchetti
+uint32_t seqno_r; //num sequenza ricevuto
 //============================================
 void sock_connect(int port)
 {
@@ -59,33 +60,76 @@ void quit(int i)
 	close(i);
 	FD_CLR(i, &master);
 	cout<<"Socket "<<i<<" chiuso."<<endl;
-	code = 0;
+	busy = false;
+	code = 0, seqno=0;
 }
 
+
+int check_seqno(uint32_t seqno_r) //-1 in caso di errore, 0 se corrisponde
+{
+	if(seqno_r != seqno) //gestire la chiusura della connessione per bene
+	{
+		cerr<<"Numeri di sequenza fuori fase!"<<endl;
+		return -1;
+	}
+	else return 0;
+}
+
+void send_seqno(int sd)
+{
+	//invio seqno
+	if(send(sd, (void*)&seqno, sizeof(uint32_t), 0)== -1)
+	{
+		cerr<<"Errore di send(seqno). Codice: "<<errno<<endl;
+		exit(1);
+	}
+}
+
+void recv_seqno(int sd)
+{
+	//ricevo numero di sequenza dal client
+	if(recv(sd, &seqno_r, sizeof(uint32_t), 0) == -1)
+	{
+	    cerr<<"Errore di recv(seqno). Codice: "<<errno<<endl;
+	    exit(1);
+	}
+}
 void recvData(int sd)
 {
+	
+	recv_seqno(sd);
+	if(check_seqno(seqno_r) == -1) exit(1);
+	
 	// Attendo dimensione del mesaggio                
 	if(recv(sd, (void*)&lmsg, sizeof(uint16_t), 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione lunghezza. "<<endl;
 		exit(1);
 	}
-	
+	seqno++;
 	len = ntohs(lmsg); // Rinconverto in formato host
-
-	//if(recv(sd, (void*)tmp_buf, len, 0) == -1)
+	
+	recv_seqno(sd);
+	if(check_seqno(seqno_r) == -1) exit(1);
+	
 	if(recv(sd, (void*)net_buf.c_str(), len, 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione buffer dati. "<<endl;
 		exit(1);
 	}
+	seqno++;
 }
 
 void recv_file(string filename)
 {
+	recv_seqno(new_sd);
+	if(check_seqno(seqno_r) == -1) exit(1);
+	
 	if(recv(new_sd, &lmsg, sizeof(uint64_t), MSG_WAITALL) == -1) {
-		cerr<<"Errore in fase di ricezione lunghezza file. Codice: "<<errno<<endl; exit(1); }
-      
+		cerr<<"Errore in fase di ricezione lunghezza file. Codice: "<<errno<<endl;
+		exit(1);
+	}
+	seqno++;
 	ctx_len = ntohl(lmsg); // Rinconverto in formato host
 	cout<<"Lunghezza file (Bytes): "<<ctx_len<<endl;							
 	char *buf = new char[CHUNK];
@@ -95,9 +139,7 @@ void recv_file(string filename)
 	
 	long long int mancanti = ctx_len;
 	long long int ricevuti = 0;
-	int count=0;
-	char *app_buf = buf; //app punta a buf[0]
-	int progress = 0;
+	int count=0, progress = 0;
 	
 	string path ="./files/";
 	path.append(filename);
@@ -108,6 +150,15 @@ void recv_file(string filename)
 	
 	while((mancanti-CHUNK) > 0)
 	{
+		//ricevo numero di sequenza dal client
+		recv_seqno(new_sd);		
+		if(check_seqno(seqno_r) == -1)
+		{
+			fp.close();
+			remove(path.c_str()); //elimino il file
+			exit(1); //gestire meglio la chiusura
+		}
+		
 		int n = recv(new_sd, (void*)buf, CHUNK, MSG_WAITALL);
 		if(n == -1)
 		{
@@ -118,10 +169,9 @@ void recv_file(string filename)
 		ricevuti += n;
 		mancanti -= n;
 		
+		seqno++;
 		fp.write(buf, CHUNK);
-		
-		//buf += CHUNK; //mi sposto di CHUNK posizioni in avanti nell'array (vedi aritmetica dei puntatori)
-		
+
 		//percentuale di progresso
 		progress = (ricevuti*100)/ctx_len;
 		cout<<"\r"<<progress<<"%";
@@ -133,6 +183,15 @@ void recv_file(string filename)
 		delete[] buf;
 		char *buf = new char[mancanti];
 		
+		//ricevo numero di sequenza dal client
+		recv_seqno(new_sd);
+		if(check_seqno(seqno_r) == -1)
+		{
+			fp.close();
+			remove(path.c_str()); //elimino il file
+			exit(1); //gestire meglio la chiusura
+		}
+		
 		int n = recv(new_sd, (void*)buf, mancanti, MSG_WAITALL);
 		if(n == -1)
 		{
@@ -141,6 +200,7 @@ void recv_file(string filename)
 		}
 		ricevuti += n;
 		fp.write(buf, mancanti);
+		seqno++;
 		
 		progress = (ricevuti*100)/ctx_len;
 		cout<<"\r"<<progress<<"%";
@@ -163,26 +223,30 @@ void recv_file(string filename)
 	code=0; //metto il codice neutro per evitare eventuali problemi nello switch
 }
 
-void send_data(string buf, int sock) {
+void send_data(string buf, int sock) 
+{
 	len = buf.length();
 	lmsg = htonl(len);
 	
+	send_seqno(sock);
 	if(send(sock, (void*) &lmsg, sizeof(uint32_t), 0) == -1)
 	{
 		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
 		exit(1);
 	}
+	seqno++;
+	send_seqno(sock);
         
         if(send(sock, (void*)buf.c_str(), len, 0) == -1)
         {
         	cerr<<"Errore di send(buf). Codice: "<<errno<<endl;
         	exit(1);
         }
-        
+        seqno++;
         code = 0;
 }
 
-bool search_file(int sock, string filename)
+bool search_file(string filename)
 {
 	DIR *d;
 	struct dirent *dir;
@@ -234,11 +298,13 @@ void send_file(int sd)
 	
 	lmsg = htonl(fsize); //invio lunghezza file
 	
+	send_seqno(sd);
 	if(send(sd, &lmsg, sizeof(uint64_t), 0) == -1)
 	{
 		cerr<<"Errore di send(size)."<<endl;
 		exit(1);
 	}
+	seqno++;
 	
 	cout<<"Invio del file: "<<net_buf<<" in corso..."<<endl;
 	
@@ -248,6 +314,9 @@ void send_file(int sd)
 
 	while((mancanti-CHUNK)>0)
 	{
+		//invio il numero di sequenza
+		send_seqno(sd);
+		
 		fp.read(buf, CHUNK); //ora buf contiene il contenuto del file letto
 		int n = send(sd, (void*)buf, CHUNK, 0);
 		if(n == -1)
@@ -255,7 +324,7 @@ void send_file(int sd)
 			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
 			exit(1);
 		}
-		count++;
+		count++; seqno++;
 
 		mancanti -= n;
 		inviati += n;
@@ -267,6 +336,10 @@ void send_file(int sd)
 	{
 		delete[] buf; //occhio !!
 		char *buf = new char[mancanti];
+		
+		//invio il numero di sequenza
+		send_seqno(sd);
+		
 		fp.read(buf, mancanti); //ora buf contiene il contenuto del file letto
 		
 		int n = send(sd, (void*)buf, mancanti, 0);
@@ -275,7 +348,7 @@ void send_file(int sd)
 			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
 			exit(1);
 		}
-		count++;
+		count++; seqno++;
 		inviati += n;
 		progress = (inviati*100)/fsize;
 		cout<<"\r"<<progress<<"%";	
@@ -339,39 +412,34 @@ while(1){
 			if(FD_ISSET(i, &master)) {
             			if(i != sd)
             			{
+            				//ricevo numero di sequenza dal client
+					recv_seqno(i);					
+            				if(check_seqno(seqno_r) == -1) exit(1);
+            				
             				//ricevo comando dal client
             				if(recv(i, &code, sizeof(code), 0) == -1) //sostituito new_sd con i
 					{
 					    cerr<<"Errore in fase di ricezione comando: "<<endl;
 					    exit(1);
 		        		}
-		        		
+		        		seqno++;
 					//cout<<"Ricevuto comando "<<code<<" dal client "<<i<<"."<<endl;
 					
 					switch(code)
 					{
 						//case 0:
 						//	break;
-						case 1: //============ricezione file============
+						case 1: //============ricezione file============ comando !upload
 						{
 							cout<<"In attesa di file..."<<endl;
 							
-							recvData(new_sd);
+							recvData(new_sd); //ricevo nome file
 							
 							cout<<"Ricevuto il nome_file: "<<net_buf.c_str()<<endl;
 							
-							recv_file(net_buf.c_str());
-													
-							break;
-						}
-						case 2: //========download file=============
-						{	recvData(new_sd);
+							bool found = search_file(net_buf.c_str());
 							
-							string filename = net_buf.c_str();
-							cout<<"Il client "<<new_sd<<" ha richiesto di scaricare il file: "<<filename<<endl;
-							
-							//1) controllo se il file esite
-							bool found = search_file(i, filename);
+							send_seqno(i);
 							
 							//2) mando l'esito al client
 							if(send(i, (void*)&found, sizeof(found), 0)== -1)
@@ -379,6 +447,34 @@ while(1){
 								cerr<<"Errore di send() relativa all'esistenza del file. Codice:"<<errno<<endl;
 								exit(1);
 							}
+							seqno++;
+							
+							if(found)
+							{
+								cout<<"File esistente."<<endl;
+								break;
+							}
+							else recv_file(net_buf.c_str());
+													
+							break;
+						}
+						case 2: //========download file============= comando !get
+						{	recvData(new_sd);
+							
+							string filename = net_buf.c_str();
+							cout<<"Il client "<<new_sd<<" ha richiesto di scaricare il file: "<<filename<<endl;
+							
+							//1) controllo se il file esite
+							bool found = search_file(filename);
+							
+							send_seqno(i);
+							//2) mando l'esito al client
+							if(send(i, (void*)&found, sizeof(found), 0)== -1)
+							{
+								cerr<<"Errore di send() relativa all'esistenza del file. Codice:"<<errno<<endl;
+								exit(1);
+							}
+							seqno++;
 							
 							//3) se non esiste mi fermo qua
 							if(!found) { cout<<"File inesistente."<<endl; break; }
