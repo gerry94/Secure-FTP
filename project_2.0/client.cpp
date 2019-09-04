@@ -202,7 +202,7 @@ void recv_file(string filename, int new_sd)
       
 	long long int fsize = ntohl(lmsg); // Rinconverto in formato host
 	cout<<"Lunghezza file (Bytes): "<<fsize<<endl;							
-	char *buf = new char[fsize];
+	char *buf = new char[CHUNK];
 //il flag WAITALL indica che la recv aspetta TUTTI i pacchetti. Senza ne riceve solo uno e quindi file oltre una certa dimensione risultano incompleti							
 	
 	cout<<"Ricezione di "<<filename<<" in corso..."<<endl;
@@ -212,6 +212,13 @@ void recv_file(string filename, int new_sd)
 	int count=0;
 	char *app_buf = buf; //app punta a buf[0]
 	int progress = 0;
+	
+	string path ="./files/";
+	path.append(filename);
+
+	fp.open(path.c_str(), ios::out | ios::binary); //creo il file con il nome passato
+	
+	if(!fp) { cerr<<"Errore apertura file."<<endl; exit(1); }
 	
 	while((mancanti-CHUNK) > 0)
 	{
@@ -225,8 +232,8 @@ void recv_file(string filename, int new_sd)
 		ricevuti += n;
 		mancanti -= n;
 		
-		buf += CHUNK; //mi sposto di CHUNK posizioni in avanti nell'array (vedi aritmetica dei puntatori)
-		
+		fp.write(buf, CHUNK);
+
 		//percentuale di progresso
 		progress = (ricevuti*100)/fsize;
 		cout<<"\r"<<progress<<"%";
@@ -235,34 +242,33 @@ void recv_file(string filename, int new_sd)
 	}
 	if(mancanti != 0)
 	{
-		int n = recv(new_sd, (void*)buf, (fsize-ricevuti), MSG_WAITALL);
+		delete[] buf;
+		char *buf = new char[mancanti];
+		
+		int n = recv(new_sd, (void*)buf, mancanti, MSG_WAITALL);
 		if(n == -1)
 		{
 			cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 			exit(1);
 		}
 		ricevuti += n;
+		fp.write(buf, mancanti);
+		
 		progress = (ricevuti*100)/fsize;
 		cout<<"\r"<<progress<<"%";
 
 		count++;
 	}
 	cout<<endl;
-	cout<<"Ricevuto file in "<<count<<" pacchetti, per un totale di "<<ricevuti<<" Bytes."<<endl;
+	cout<<"Ricevuto file in "<<count<<" pacchetti, per un totale di "<<ricevuti<<" bytes."<<endl;
 	
 	if(ricevuti != fsize)
 	{
 		cerr<<"Errore di trasferimento."<<endl;
 		return;
 	}
-	cout<<"Salvataggio file in corso. Attendere..."<<endl;
-
-	fp.open(filename, ios::out | ios::binary); //creo il file con il nome passato
-	
-	if(!fp) { cerr<<"Errore apertura file."<<endl; }
-	fp.write(app_buf, fsize); //scrivo tutto app_buf (lungo fsize) nel file
-								
-	cout<<"Salvataggio file completato."<<endl;
+							
+	cout<<"Salvataggio file completato in "<<path<<endl;
 	fp.close();
 	cout<<"File chiuso."<<endl;
 }
@@ -274,13 +280,10 @@ void send_file()
 	fp.seekg(0, fp.beg); //mi riposizione all'inizio
 	
 	cout<<"Lunghezza file(Byte): "<<fsize<<endl;
-	char *buf = new char[fsize]; //buffer di appoggio per l'invio su socket
-	fp.read(buf, fsize); //ora buf contiene il contenuto del file letto
-	
-	fp.close();
+	char *buf = new char[CHUNK];
 	
 	lmsg = htonl(fsize); //invio lunghezza file
-	cout<<"lmsg = htonl(fsize): "<<lmsg<<endl;//", sizeof(uint32_t): "<<sizeof(uint32_t)<<endl;
+	
 	if(send(sd, &lmsg, sizeof(uint64_t), 0) == -1)
 	{
 		cerr<<"Errore di send(size)."<<endl;
@@ -292,19 +295,19 @@ void send_file()
 	long long int mancanti = fsize;
 	long long int inviati = 0;
 	int count=0, progress=0;
-	//=========il problema potrebbe essere di ricopiatura dell'array=========
+
 	while((mancanti-CHUNK)>0)
 	{
+		fp.read(buf, CHUNK); //ora buf contiene il contenuto del file letto
 		int n = send(sd, (void*)buf, CHUNK, 0);
-		//cout<<"send(): "<<n<<endl;
 		if(n == -1)
 		{
-			cerr<<"Errore di send(buf)."<<endl;;
+			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
 			exit(1);
 		}
 		count++;
 		
-		buf += CHUNK;
+		//buf += CHUNK;
 		mancanti -= n;
 		inviati += n;
 		
@@ -313,11 +316,14 @@ void send_file()
 	}
 	if(mancanti!=0)
 	{
+		delete[] buf; //occhio !!
+		char *buf = new char[mancanti];
+		fp.read(buf, mancanti); //ora buf contiene il contenuto del file letto
+		
 		int n = send(sd, (void*)buf, mancanti, 0);
-		//cout<<"send(): "<<n<<endl;
 		if(n == -1)
 		{
-			cerr<<"Errore di send(buf)."<<endl;;
+			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
 			exit(1);
 		}
 		count++;
@@ -327,7 +333,7 @@ void send_file()
 	}
 	cout<<endl;
 	cout<<"Inviato file in "<<count<<" pacchetti."<<endl;
-	//cout<<"File inviato."<<endl;
+	fp.close();
 }
 
 void recvData(int sd)
