@@ -112,11 +112,14 @@ void recvData(int sd)
 	recv_seqno(sd);
 	if(check_seqno(seqno_r) == -1) exit(1);
 	
-	if(recv(sd, (void*)net_buf.c_str(), len, 0) == -1)
+	char *tmp_buf = new char[len];
+	if(recv(sd, (void*)tmp_buf, len, 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione buffer dati. "<<endl;
 		exit(1);
 	}
+	net_buf = tmp_buf;
+	net_buf.resize(len);
 	seqno++;
 }
 

@@ -87,6 +87,7 @@ while(1)
     		{	
     			if(i == 0)
     			{
+    				net_buf.clear();
     				cin>>net_buf; //controllo secure coding?
     				
     				if(net_buf == "!help") {
@@ -109,6 +110,7 @@ while(1)
 					case 0: //stato neutro
 						break;
 					case 1: //====== !upload ==========
+						net_buf.clear();
 						cout<<"Inserire il nome del file da inviare: "<<endl;
 						cin>>net_buf;
 						if(!check_command_injection(net_buf)){
@@ -152,6 +154,7 @@ while(1)
 				    		
 						break;
 					case 2: //========== !get ===============
+						net_buf.clear();
 						send_status(stato);
 						
 						cout<<"Inserire il nome del file da scaricare: "<<endl;
@@ -417,12 +420,16 @@ void recvData(int sd)
 	recv_seqno(sd);
 	if(check_seqno(seqno_r) == -1) exit(1);
 	
-	if(recv(sd, (void*)net_buf.c_str(), len, MSG_WAITALL) == -1)
+	char *tmp_buf = new char[len];
+	if(recv(sd, (void*)tmp_buf, len, MSG_WAITALL) == -1)
 	{
 		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 		exit(1);
 	}
+	net_buf = tmp_buf;
+	net_buf.resize(len);
 	seqno++;
+	delete[] tmp_buf;
 }
 void send_seqno(int sd)
 {
