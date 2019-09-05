@@ -10,6 +10,8 @@
 #include <fstream>
 #include <errno.h>
 #include <dirent.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
 
 using namespace std;
 
@@ -18,6 +20,7 @@ using namespace std;
 # define PORT_NO 15050
 
 //========prototipi funzioni============
+bool recv_ack();
 void send_status(int);
 void printMsg();
 void send_port();
@@ -33,6 +36,7 @@ bool check_file_existance(string);
 int check_seqno(uint32_t);
 void send_seqno(int);
 void recv_seqno(int);
+bool authenticate();
 
 //=====variabili socket ==========
 int porta, ret, sd;
@@ -52,8 +56,9 @@ long long int lmsg;
 fstream fp; //puntatore al file da aprire
 
 //==========variabili cybersecurity===========
-unsigned int seqno; //numero di sequenza pacchetti
+uint32_t seqno; //numero di sequenza pacchetti
 uint32_t seqno_r; //num seq ricevuto
+string cert_name = "./Certificati_PrivateKey/Riccardo_cert.pem";
 //============================================
 
 int main()
@@ -70,6 +75,9 @@ int main()
 	printMsg();
 
     	create_udp_socket();
+    	
+    	if(!authenticate())
+    		exit(1);
 while(1)
 {	printf(">");
 	fflush(stdout);
@@ -224,6 +232,17 @@ while(1)
 }
 
 	return 0;
+}
+
+bool recv_ack()
+{
+	bool ack;
+	if(recv(sd, &ack, sizeof(ack), 0) == -1)
+	{
+	    cerr<<"Errore in fase di recv(ack). Codice: "<<errno<<endl;
+	    exit(1);
+	}
+	return ack;
 }
 
 int check_seqno(uint32_t sr)
@@ -601,5 +620,51 @@ bool check_file_existance(string buf) //return true se il file esiste
 	closedir(d);
 	}
 	return false;
+}
+
+bool authenticate()
+{
+	X509 *cert;
+	FILE *fpem = fopen(cert_name.c_str(), "rb");
+	
+	if(!fpem)
+	{
+		cout<<"File certificato non trovato."<<endl;
+		return false;
+	}
+	
+	cert = PEM_read_X509(fpem, NULL,NULL,NULL);
+	if(!cert)
+	{
+		cout<<"Errore lettura certificato."<<endl;
+		return false;
+	}
+
+	unsigned char *buf = NULL;
+	unsigned long int fsize = i2d_X509(cert, &buf);
+	if(fsize <= 0) return false;
+	
+	lmsg = htons(fsize);
+	if(send(sd, (void*) &lmsg, sizeof(uint64_t), 0) == -1)
+	{
+		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
+		return false;
+	}
+
+	if(send(sd, (void*)buf, fsize, 0)== -1)
+	{
+		cerr<<"Errore di send(file.pem). Codice: "<<errno<<endl;
+		return false;
+	}
+	OPENSSL_free(buf);
+	
+	if(!recv_ack())
+	{
+		cout<<"Errore di autenticazione."<<endl;
+		exit(1);
+	}
+	
+	fclose(fpem);
+	return true;	
 }
 

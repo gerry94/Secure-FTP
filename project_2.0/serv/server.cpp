@@ -9,6 +9,9 @@
 #include <fstream>
 #include <errno.h>
 #include <dirent.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
 
 using namespace std;
 
@@ -33,14 +36,117 @@ long long int ctx_len, lmsg;
 fstream fp;
 
 //==========variabili cybersecurity===========
-unsigned int seqno; //numero di sequenza pacchetti
+uint32_t seqno; //numero di sequenza pacchetti
 uint32_t seqno_r; //num sequenza ricevuto
+bool secure_connection = false;
+X509_STORE *store;
+
 //============================================
+
+void send_ack(int sock, bool ack)
+{
+	if(send(sock, (void*)&ack, sizeof(ack), 0)== -1)
+	{
+		cerr<<"Errore di send(ack). Codice:"<<errno<<endl;
+		exit(1);
+	}
+}
+
+bool create_ca_store()
+{
+	store = X509_STORE_new();
+	FILE *fp;
+	
+	//aggiungo cert della trusted CA
+	X509 *ca_cert;
+	fp = fopen("../Certificati_PrivateKey/SimpleAuthorityCA_cert.pem", "r");
+	if(!fp) return false;
+	ca_cert = PEM_read_X509(fp, NULL, NULL, NULL);
+	X509_STORE_add_cert(store, ca_cert);
+	
+	fclose(fp);
+	
+	//aggiungo cert client
+	/*X509 *cert;
+	fp = fopen("../Certificati_PrivateKey/gerardo_cert.pem", "r");
+	if(!fp) return false;
+	cert = PEM_read_X509(fp, NULL, NULL, NULL);
+	X509_STORE_add_cert(store, cert);
+	
+	fclose(fp);*/
+	
+	//aggiungo lista cert revocati
+	X509_CRL *crl;
+	fp = fopen("../Certificati_PrivateKey/SimpleAuthorityCA_crl.pem", "r");
+	if(!fp) return false;
+	crl = PEM_read_X509_CRL(fp, NULL, NULL, NULL);
+	fclose(fp);
+	
+	X509_STORE_add_crl(store, crl);
+	X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK);
+	
+	cout<<"Creato deposito dei Certificati."<<endl;
+	//utilizzo store ...
+	return true;
+}
+
+bool authenticate(int sd)
+{
+	// Attendo dimensione del mesaggio                
+	if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
+	{
+		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
+		return false;
+	}
+	
+	len = ntohs(lmsg); // Rinconverto in formato host
+	
+	char *buf = new char[len];
+	if(recv(sd, (void*)buf, len, 0) == -1)
+	{
+		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
+		return false;
+	}
+
+	X509 *cert = d2i_X509(NULL, (const unsigned char**)&buf, len);
+	if(!cert) return false;
+	
+	X509_NAME *subject_name = X509_get_subject_name(cert);
+	string sname = X509_NAME_oneline(subject_name, NULL, 0);
+
+	X509_STORE_CTX *ctx = X509_STORE_CTX_new();
+	X509_STORE_CTX_init(ctx, store, cert, NULL);
+	
+	//verifica del certificato
+	if(X509_verify_cert(ctx) != 1) 
+	{
+		int error = X509_STORE_CTX_get_error(ctx);
+		switch(error) 
+		{
+			case 20:
+				cout<<"Impossibile trovare la Certification Authority specificata."<<endl;
+				break;
+			case 23:
+				cout<<"Il certificato è stato revocato!"<<endl;
+				break;
+			default:
+				cout<<"Codice: "<<error<<endl;
+				break;
+		}
+		send_ack(sd, false);
+		return false;
+	}
+	send_ack(sd, true);
+	X509_STORE_CTX_free(ctx);
+	return true;
+	
+}
 void sock_connect(int port)
 {
-/* Creazione socket */
+	//Creazione socket
     sd = socket(AF_INET, SOCK_STREAM, 0);
-    /* Creazione indirizzo di bind */
+    
+    //Creazione indirizzo di bind
 
     my_addr.sin_family = AF_INET;
     my_addr.sin_port = htons(port);
@@ -62,6 +168,7 @@ void quit(int i)
 	cout<<"Socket "<<i<<" chiuso."<<endl;
 	busy = false;
 	code = 0, seqno=0;
+	secure_connection=false;
 }
 
 
@@ -134,7 +241,6 @@ void recv_file(string filename)
 	}
 	seqno++;
 	ctx_len = ntohl(lmsg); // Rinconverto in formato host
-	//cout<<"Lunghezza file (Bytes): "<<ctx_len<<endl;
 	
 	if(ctx_len <= 0)
 	{
@@ -370,6 +476,11 @@ void send_file(int sd)
 
 int main()
 {
+	if(!create_ca_store())
+	{
+		cerr<<"Impossibile creare deposito certificati."<<endl;
+		return 0;
+		}
 	
 	FD_ZERO(&master);
 	FD_ZERO(&read_fds);
@@ -415,11 +526,23 @@ while(1){
 				        cout<<"SERVER: accettata nuova connessione con il client da "<<inet_ntoa(cl_addr.sin_addr)<<" sul socket "<<new_sd<<". "<<endl;
 				        busy = true;
 				        
+				        
+				        
 				    }
     			}
     			else {
 
-			if(FD_ISSET(i, &master)) {
+			if(FD_ISSET(i, &master)) 
+			{
+			
+				if(!secure_connection) { //eseguo la authenticate solo la prima volta
+						if(!authenticate(i))
+						{
+							cerr<<"Impossibile stabilire una connessione protetta."<<endl;
+							return 0;
+						}
+						else secure_connection = true;
+				}
             			if(i != sd)
             			{
             				//ricevo numero di sequenza dal client
@@ -518,6 +641,7 @@ while(1){
 							cout<<"    @    @     @  @        @ @ @    @ @      @ @   @    @     @  @      @    "<<endl;
 							cout<<"      @  @     @  @        @        @   @    @   @ @    @     @  @      @    "<<endl;
 							cout<<"@ @ @ @  @ @ @ @  @        @ @ @ @  @     @  @ @ @ @ @  @ @ @ @  @      @    "<<endl;
+							X509_STORE_free(store);
 							exit(1);
 						default:
 							break;
