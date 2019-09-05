@@ -341,7 +341,8 @@ void send_file()
 	cout<<"Lunghezza file(Byte): "<<fsize<<endl;
 	char *buf = new char[CHUNK];
 	
-	lmsg = htonl(fsize); //invio lunghezza file
+	if(fsize >= 4200000000) lmsg = htonl(0);
+	else lmsg = htonl(fsize); //invio lunghezza file (max 4.2 GiB)
 	
 	send_seqno(sd);
 	if(send(sd, &lmsg, sizeof(uint64_t), 0) == -1)
@@ -350,6 +351,12 @@ void send_file()
 		exit(1);
 	}
 	seqno++;
+	
+	if(fsize >= 4200000000)
+	{
+		cout<<"Errore: dimensione file troppo grande. Dim. max: 4,2 GigaByte."<<endl;
+		return;
+	}
 	
 	cout<<"Invio del file: "<<net_buf<<" in corso..."<<endl;
 	

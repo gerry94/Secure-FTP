@@ -134,7 +134,14 @@ void recv_file(string filename)
 	}
 	seqno++;
 	ctx_len = ntohl(lmsg); // Rinconverto in formato host
-	cout<<"Lunghezza file (Bytes): "<<ctx_len<<endl;							
+	//cout<<"Lunghezza file (Bytes): "<<ctx_len<<endl;
+	
+	if(ctx_len <= 0)
+	{
+		cout<<"Errore dimensione file."<<endl;
+		return;
+	}
+								
 	char *buf = new char[CHUNK];
 //il flag WAITALL indica che la recv aspetta TUTTI i pacchetti. Senza ne riceve solo uno e quindi file oltre una certa dimensione risultano incompleti							
 	
