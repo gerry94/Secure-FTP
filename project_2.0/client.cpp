@@ -205,7 +205,7 @@ while(1)
 						recvData(sd);
 						cout<<"======= FILE DISPONIBILI ========"<<endl;
 						cout<<net_buf.c_str();
-						cout<<"================================="<<endl;
+						cout<<endl<<"================================="<<endl;
 						//cout<<"Comando non ancora implementato..."<<endl;
 						break;
 					case 5:

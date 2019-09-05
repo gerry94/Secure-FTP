@@ -277,7 +277,7 @@ void list(int sock)
 	DIR *d;
 	struct dirent *dir;
 
-	string lista_file;
+	string lista_file = "\n";
 	
 	d = opendir("./files");
 	if(d)
