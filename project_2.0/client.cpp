@@ -12,15 +12,21 @@
 #include <dirent.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
+#include <openssl/rand.h>
+#include <stdlib.h>
+#include <time.h>
 
 using namespace std;
 
 # define CHUNK 512000
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
+# define NONCE_LENGTH 8
 
 //========prototipi funzioni============
 bool recv_ack();
+void send_ack(bool);
 void send_status(int);
 void printMsg();
 void send_port();
@@ -36,7 +42,9 @@ bool check_file_existance(string);
 int check_seqno(uint32_t);
 void send_seqno(int);
 void recv_seqno(int);
-bool authenticate();
+bool send_authentication();
+bool recv_authentication();
+bool create_nonce();
 
 //=====variabili socket ==========
 int porta, ret, sd;
@@ -58,8 +66,91 @@ fstream fp; //puntatore al file da aprire
 //==========variabili cybersecurity===========
 uint32_t seqno; //numero di sequenza pacchetti
 uint32_t seqno_r; //num seq ricevuto
-string cert_name = "./Certificati_PrivateKey/Riccardo_cert.pem";
+string cert_name = "./Certificati_PrivateKey/gerardo_cert.pem";
+X509_STORE *store;
 //============================================
+
+bool create_ca_store()
+{
+	store = X509_STORE_new();
+	FILE *fp;
+	
+	//aggiungo cert della trusted CA
+	X509 *ca_cert;
+	fp = fopen("./Certificati_PrivateKey/SimpleAuthorityCA_cert.pem", "r");
+	if(!fp) return false;
+	ca_cert = PEM_read_X509(fp, NULL, NULL, NULL);
+	X509_STORE_add_cert(store, ca_cert);
+	
+	fclose(fp);
+	
+	//aggiungo lista cert revocati
+	X509_CRL *crl;
+	fp = fopen("./Certificati_PrivateKey/SimpleAuthorityCA_crl.pem", "r");
+	if(!fp) return false;
+	crl = PEM_read_X509_CRL(fp, NULL, NULL, NULL);
+	fclose(fp);
+	
+	X509_STORE_add_crl(store, crl);
+	X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK);
+	
+	cout<<"Creato deposito dei Certificati."<<endl;
+	//utilizzo store ...
+	return true;
+}
+
+bool recv_authentication()
+{
+	// Attendo dimensione del mesaggio                
+	if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
+	{
+		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
+		return false;
+	}
+	
+	len = ntohs(lmsg); // Rinconverto in formato host
+	
+	char *buf = new char[len];
+	if(recv(sd, (void*)buf, len, 0) == -1)
+	{
+		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
+		return false;
+	}
+
+	X509 *cert = d2i_X509(NULL, (const unsigned char**)&buf, len);
+	if(!cert) return false;
+	
+	X509_NAME *subject_name = X509_get_subject_name(cert);
+	string sname = X509_NAME_oneline(subject_name, NULL, 0);
+
+	X509_STORE_CTX *ctx = X509_STORE_CTX_new();
+	X509_STORE_CTX_init(ctx, store, cert, NULL);
+	
+	//verifica del certificato
+	if(X509_verify_cert(ctx) != 1) 
+	{
+		int error = X509_STORE_CTX_get_error(ctx);
+		switch(error) 
+		{
+			case 20:
+				cout<<"Impossibile trovare la Certification Authority specificata."<<endl;
+				break;
+			case 23:
+				cout<<"Il certificato è stato revocato!"<<endl;
+				break;
+			default:
+				cout<<"Codice: "<<error<<endl;
+				break;
+		}
+		send_ack(false);
+		return false;
+	}
+	cout<<"Certificato del server valido."<<endl;
+	send_ack(true);
+	X509_STORE_CTX_free(ctx);
+	return true;
+	
+}
 
 int main()
 {
@@ -71,13 +162,29 @@ int main()
 	FD_SET(0, &master);
 	FD_SET(sd, &master);
 	fdmax = sd;
-	
-	printMsg();
 
     	create_udp_socket();
+
+	if(!create_ca_store())
+	{
+		cerr<<"Impossibile creare deposito certificati."<<endl;
+		return 0;
+	}
     	
-    	if(!authenticate())
-    		exit(1);
+    	if(!send_authentication())
+	{
+    		cerr<<"Certificato non valido."<<endl;
+		exit(1);
+	}
+
+	if(!recv_authentication())
+	{
+		cerr<<"Certificato server non valido."<<endl;
+		exit(1);
+	}
+
+	printMsg();
+
 while(1)
 {	printf(">");
 	fflush(stdout);
@@ -232,6 +339,15 @@ while(1)
 }
 
 	return 0;
+}
+
+void send_ack(bool ack)
+{
+	if(send(sd, (void*)&ack, sizeof(ack), 0)== -1)
+	{
+		cerr<<"Errore di send(ack). Codice:"<<errno<<endl;
+		exit(1);
+	}
 }
 
 bool recv_ack()
@@ -622,8 +738,44 @@ bool check_file_existance(string buf) //return true se il file esiste
 	return false;
 }
 
-bool authenticate()
+bool create_nonce()
 {
+	if(RAND_poll() != 1){
+		cerr<<"Errore esecuzione RAND_poll()"<<endl;
+		return false;
+	}
+
+	char *nonce_client = new char[NONCE_LENGTH];
+
+	if(RAND_bytes((unsigned char*)nonce_client, NONCE_LENGTH) != 1){
+		cerr<<"Errore esecuzione RAND_bytes"<<endl;
+		return false;
+	}
+
+	cout<<nonce_client<<endl;	
+
+	lmsg = htons(NONCE_LENGTH);
+	if(send(sd, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
+	{
+		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
+		return false;
+	}
+
+	if(send(sd, (void*)nonce_client, NONCE_LENGTH, 0)== -1)
+	{
+		cerr<<"Errore di send(nonce). Codice: "<<errno<<endl;
+		return false;
+	}
+
+	return true;
+}
+
+bool send_authentication()
+{
+
+	if(!create_nonce())
+		return false;
+	
 	X509 *cert;
 	FILE *fpem = fopen(cert_name.c_str(), "rb");
 	
@@ -658,6 +810,7 @@ bool authenticate()
 	}
 	OPENSSL_free(buf);
 	
+	cout<<"Certificato inviato al server."<<endl;
 	if(!recv_ack())
 	{
 		cout<<"Errore di autenticazione."<<endl;

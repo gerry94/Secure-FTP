@@ -39,6 +39,7 @@ fstream fp;
 uint32_t seqno; //numero di sequenza pacchetti
 uint32_t seqno_r; //num sequenza ricevuto
 bool secure_connection = false;
+string cert_server = "../Certificati_PrivateKey/Server_cert.pem";
 X509_STORE *store;
 
 //============================================
@@ -90,9 +91,33 @@ bool create_ca_store()
 	return true;
 }
 
-bool authenticate(int sd)
+bool recv_nonce(int sd)
 {
-	// Attendo dimensione del mesaggio                
+	// Attendo dimensione del messaggio 
+	if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
+	{
+		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
+		return false;
+	}
+	
+	len = ntohs(lmsg); // Rinconverto in formato host
+	
+	unsigned char *buf_nonce = new unsigned char[len];
+	if(recv(sd, (void*)buf_nonce, len, 0) == -1)
+	{
+		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
+		return false;
+	}
+
+	cout<<buf_nonce<<endl;
+	return true;
+}
+
+bool recv_authentication(int sd)
+{        
+	if(!recv_nonce(sd))
+		return false;
+
 	if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
@@ -136,11 +161,71 @@ bool authenticate(int sd)
 		send_ack(sd, false);
 		return false;
 	}
+	cout<<"Certificato client sul socket "<<sd<<" valido."<<endl;
 	send_ack(sd, true);
 	X509_STORE_CTX_free(ctx);
 	return true;
 	
 }
+
+bool recv_ack(int sd)
+{
+	bool ack;
+	if(recv(sd, &ack, sizeof(ack), 0) == -1)
+	{
+	    cerr<<"Errore in fase di recv(ack). Codice: "<<errno<<endl;
+	    exit(1);
+	}
+	return ack;
+}
+
+bool send_authentication(int sd)
+{
+	X509 *cert;
+	FILE *fpem = fopen(cert_server.c_str(), "rb");
+	
+	if(!fpem)
+	{
+		cout<<"File certificato non trovato."<<endl;
+		return false;
+	}
+	
+	cert = PEM_read_X509(fpem, NULL,NULL,NULL);
+	if(!cert)
+	{
+		cout<<"Errore lettura certificato."<<endl;
+		return false;
+	}
+
+	unsigned char *buf = NULL;
+	unsigned long int fsize = i2d_X509(cert, &buf);
+	if(fsize <= 0) return false;
+	
+	lmsg = htons(fsize);
+	if(send(sd, (void*) &lmsg, sizeof(uint64_t), 0) == -1)
+	{
+		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
+		return false;
+	}
+
+	if(send(sd, (void*)buf, fsize, 0)== -1)
+	{
+		cerr<<"Errore di send(file.pem). Codice: "<<errno<<endl;
+		return false;
+	}
+	OPENSSL_free(buf);
+	
+	cout<<"Certificato inviato al client."<<endl;
+	if(!recv_ack(sd))
+	{
+		cout<<"Errore di autenticazione."<<endl;
+		return false;
+	}
+	
+	fclose(fpem);
+	return true;	
+}
+
 void sock_connect(int port)
 {
 	//Creazione socket
@@ -480,7 +565,7 @@ int main()
 	{
 		cerr<<"Impossibile creare deposito certificati."<<endl;
 		return 0;
-		}
+	}
 	
 	FD_ZERO(&master);
 	FD_ZERO(&read_fds);
@@ -536,12 +621,23 @@ while(1){
 			{
 			
 				if(!secure_connection) { //eseguo la authenticate solo la prima volta
-						if(!authenticate(i))
+						if(!recv_authentication(i))
 						{
 							cerr<<"Impossibile stabilire una connessione protetta."<<endl;
-							return 0;
+							quit(i);
+							break;
 						}
-						else secure_connection = true;
+						else 
+						{	
+							cout<<"Invio certificato al client."<<endl;
+							if(!send_authentication(i))
+							{					
+								cerr<<"Certificato server non valido."<<endl;
+								exit(1);
+							}
+							else			
+								secure_connection = true;
+						}
 				}
             			if(i != sd)
             			{
