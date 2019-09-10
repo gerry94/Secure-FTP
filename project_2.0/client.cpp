@@ -22,7 +22,9 @@ using namespace std;
 # define CHUNK 512000
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
-# define NONCE_LENGTH 16
+# define NONCE_LENGTH 4 //byte
+# define IV_LENGTH 6
+# define SESSION_KEY_LEN 8
 
 //========prototipi funzioni============
 bool recv_ack();
@@ -68,6 +70,7 @@ uint32_t seqno; //numero di sequenza pacchetti
 uint32_t seqno_r; //num seq ricevuto
 string cert_name = "./Certificati_PrivateKey/gerardo_cert.pem";
 X509_STORE *store;
+char *nonce_client;
 //============================================
 
 bool create_ca_store()
@@ -180,6 +183,33 @@ int main()
 	if(!recv_authentication())
 	{
 		cerr<<"Certificato server non valido."<<endl;
+		exit(1);
+	}
+	
+	recvData(sd);
+	string key_encr = net_buf;
+	
+	recvData(sd);
+	string key_auth = net_buf;
+	
+	recvData(sd);
+	string init_v = net_buf;
+	
+	recvData(sd);
+	string nonce_a = net_buf;
+	
+	recvData(sd);
+	string nonce_b = net_buf;
+
+	string app(nonce_client); //mi appoggio ad una stringa altrimenti non funziona l'operatore di confronto
+	app.resize(NONCE_LENGTH);
+	
+	if(nonce_a == app) cout<<"nonce_a verificato."<<endl;
+	else cout<<"ERRORE di verifica nonce_a."<<endl;
+	
+	if(send(sd, (void*)nonce_b.c_str(), NONCE_LENGTH, 0) ==-1)
+	{
+		cerr<<"Errore in fase di send nonce_b. Codice: "<<errno<<endl;
 		exit(1);
 	}
 
@@ -745,24 +775,21 @@ bool create_nonce()
 		return false;
 	}
 
-	char *nonce_client = new char[NONCE_LENGTH];
+	nonce_client = new char[NONCE_LENGTH];
 
 	if(RAND_bytes((unsigned char*)nonce_client, NONCE_LENGTH) != 1){
 		cerr<<"Errore esecuzione RAND_bytes"<<endl;
 		return false;
 	}
 
-	for(int i=0; i<NONCE_LENGTH; i++)
-		cout<<i<<")"<<nonce_client[i];
-	cout<<endl;	
-
-	lmsg = htons(NONCE_LENGTH);
+	/*lmsg = htons(NONCE_LENGTH);
 	if(send(sd, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
 	{
 		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
 		return false;
-	}
-
+	}*/
+	
+	//nonce_length è già nota al server
 	if(send(sd, (void*)nonce_client, NONCE_LENGTH, 0)== -1)
 	{
 		cerr<<"Errore di send(nonce). Codice: "<<errno<<endl;

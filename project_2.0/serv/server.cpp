@@ -12,13 +12,18 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
+#include <openssl/rand.h>
+#include <time.h>
+#include <cstring>
 
 using namespace std;
 
 # define CHUNK 512000
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
-# define NONCE_LENGTH 16
+# define NONCE_LENGTH 4 //byte
+# define IV_LENGTH 6 //initialization value (controllare la dimensione (byte)
+# define SESSION_KEY_LEN 8 //controllare dim
 
 //========variabili socket========
 int ret, sd, new_sd, porta;
@@ -37,11 +42,13 @@ long long int ctx_len, lmsg;
 fstream fp;
 
 //==========variabili cybersecurity===========
+
 uint32_t seqno; //numero di sequenza pacchetti
 uint32_t seqno_r; //num sequenza ricevuto
 bool secure_connection = false;
 string cert_server = "../Certificati_PrivateKey/Server_cert.pem";
 X509_STORE *store;
+char *key_encr, *key_auth, *init_v, *nonce_a, *nonce_b; //nonce_a= ricevuto dal client
 
 //============================================
 
@@ -53,6 +60,44 @@ void send_ack(int sock, bool ack)
 		exit(1);
 	}
 }
+
+char* create_rand_val(int val_length)
+{
+	if(val_length <= 0)
+		return NULL;
+		
+	if(RAND_poll() != 1){
+		cerr<<"Errore esecuzione RAND_poll()"<<endl;
+		return NULL;
+	}	
+	
+	char *val = new char[val_length];
+	
+	if(RAND_bytes((unsigned char*)val, val_length) != 1){
+		cerr<<"Errore esecuzione RAND_bytes"<<endl;
+		return NULL;
+	}	
+	
+	return val;
+}
+
+/*bool send_nonce(char *nonce)
+{
+	lmsg = htons(NONCE_LENGTH);
+	if(send(sd, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
+	{
+		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
+		return false;
+	}
+
+	if(send(sd, (void*)nonce, NONCE_LENGTH, 0)== -1)
+	{
+		cerr<<"Errore di send(nonce). Codice: "<<errno<<endl;
+		return false;
+	}
+
+	return true;
+}*/
 
 bool create_ca_store()
 {
@@ -67,15 +112,6 @@ bool create_ca_store()
 	X509_STORE_add_cert(store, ca_cert);
 	
 	fclose(fp);
-	
-	//aggiungo cert client
-	/*X509 *cert;
-	fp = fopen("../Certificati_PrivateKey/gerardo_cert.pem", "r");
-	if(!fp) return false;
-	cert = PEM_read_X509(fp, NULL, NULL, NULL);
-	X509_STORE_add_cert(store, cert);
-	
-	fclose(fp);*/
 	
 	//aggiungo lista cert revocati
 	X509_CRL *crl;
@@ -95,25 +131,21 @@ bool create_ca_store()
 bool recv_nonce(int sd)
 {
 	// Attendo dimensione del messaggio 
-	if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
+	/*if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
 		return false;
 	}
 	
-	len = ntohs(lmsg); // Rinconverto in formato host
+	len = ntohs(lmsg); // Rinconverto in formato host*/
 	
-	char *buf_nonce = new char[len];
-	if(recv(sd, (void*)buf_nonce, len, 0) == -1)
+	nonce_a = new char[NONCE_LENGTH];
+	
+	if(recv(sd, (void*)nonce_a, NONCE_LENGTH, 0) == -1)
 	{
-		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
+		cerr<<"Errore in fase di ricezione nonce_a. Codice: "<<errno<<endl;
 		return false;
 	}
-
-	for(int i=0; i<len; i++)
-		cout<<i<<")"<<buf_nonce[i];
-	cout<<endl;
-
 	return true;
 }
 
@@ -428,9 +460,9 @@ void recv_file(string filename)
 	code=0; //metto il codice neutro per evitare eventuali problemi nello switch
 }
 
-void send_data(string buf, int sock) 
+void send_data(string buf, int lung, int sock) 
 {
-	len = buf.length();
+	len = lung; // buf.length();
 	lmsg = htonl(len);
 	
 	send_seqno(sock);
@@ -488,7 +520,7 @@ void list(int sock)
 	}
 	
 	cout<<"Invio lista file disponibili in corso..."<<endl;
-	send_data(lista_file, sock);
+	send_data(lista_file, lista_file.length(), sock);
 	cout<<"Lista inviata."<<endl;
 }
 
@@ -631,16 +663,50 @@ while(1){
 							quit(i);
 							break;
 						}
-						else 
+						else  //il server deve autenticarsi con il client
 						{	
-							cout<<"Invio certificato al client."<<endl;
+							cout<<"Invio certificato al client..."<<endl;
 							if(!send_authentication(i))
 							{					
 								cerr<<"Certificato server non valido."<<endl;
 								exit(1);
 							}
-							else			
+							else
+							{	//generare Ks, Ka, IV e nonce_b
+								key_encr = create_rand_val(SESSION_KEY_LEN);
+								key_auth = create_rand_val(SESSION_KEY_LEN);
+								init_v = create_rand_val(IV_LENGTH);
+								nonce_b = create_rand_val(NONCE_LENGTH);
+								
+								//string s(key_encr);
+								send_data(key_encr,SESSION_KEY_LEN, i);
+								send_data(key_auth, SESSION_KEY_LEN, i);
+								send_data(init_v, IV_LENGTH, i);
+								send_data(nonce_a, NONCE_LENGTH, i);
+								send_data(nonce_b, NONCE_LENGTH, i);
+								
+								char *tmp_buf = new char[NONCE_LENGTH];
+								if(recv(i, (void*)tmp_buf, NONCE_LENGTH, 0) == -1)
+								{
+									cerr<<"Errore in fase di ricezione buffer dati. "<<endl;
+									exit(1);
+								}
+								net_buf = tmp_buf;
+								net_buf.resize(NONCE_LENGTH);
+								delete[] tmp_buf;
+								
+								//mi appoggio ad una stringa altrimenti non funziona l'operatore di confront
+								string app(nonce_b); 
+								
+								app.resize(NONCE_LENGTH);
+								
+								if(net_buf == app) cout<<"nonce_b verificato."<<endl;
+								else cout<<"ERRORE verifica nonce_b."<<endl;
+								
+								//se tutto va a buon fine setto la secure_connection	
 								secure_connection = true;
+							}
+								
 						}
 				}
             			if(i != sd)
