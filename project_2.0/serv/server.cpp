@@ -18,6 +18,7 @@ using namespace std;
 # define CHUNK 512000
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
+# define NONCE_LENGTH 16
 
 //========variabili socket========
 int ret, sd, new_sd, porta;
@@ -102,14 +103,17 @@ bool recv_nonce(int sd)
 	
 	len = ntohs(lmsg); // Rinconverto in formato host
 	
-	unsigned char *buf_nonce = new unsigned char[len];
+	char *buf_nonce = new char[len];
 	if(recv(sd, (void*)buf_nonce, len, 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 		return false;
 	}
 
-	cout<<buf_nonce<<endl;
+	for(int i=0; i<len; i++)
+		cout<<i<<")"<<buf_nonce[i];
+	cout<<endl;
+
 	return true;
 }
 

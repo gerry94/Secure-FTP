@@ -22,7 +22,7 @@ using namespace std;
 # define CHUNK 512000
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
-# define NONCE_LENGTH 8
+# define NONCE_LENGTH 16
 
 //========prototipi funzioni============
 bool recv_ack();
@@ -752,7 +752,9 @@ bool create_nonce()
 		return false;
 	}
 
-	cout<<nonce_client<<endl;	
+	for(int i=0; i<NONCE_LENGTH; i++)
+		cout<<i<<")"<<nonce_client[i];
+	cout<<endl;	
 
 	lmsg = htons(NONCE_LENGTH);
 	if(send(sd, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
