@@ -808,7 +808,7 @@ while(1){
 							cout<<"      @  @     @  @        @        @   @    @   @ @    @     @  @      @    "<<endl;
 							cout<<"@ @ @ @  @ @ @ @  @        @ @ @ @  @     @  @ @ @ @ @  @ @ @ @  @      @    "<<endl;
 							X509_STORE_free(store);
-							exit(1);
+							exit(EXIT_SUCCESS);
 						default:
 							break;
 					

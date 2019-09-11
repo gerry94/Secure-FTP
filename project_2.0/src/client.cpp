@@ -212,7 +212,11 @@ int main()
 		cerr<<"Errore in fase di send nonce_b. Codice: "<<errno<<endl;
 		exit(1);
 	}
-
+	
+	cout<<"======================================="<<endl;
+	cout<<"|            CLIENT AVVIATO           |"<<endl;
+	cout<<"======================================="<<endl;
+	
 	printMsg();
 
 while(1)
@@ -748,7 +752,7 @@ void quit(int i)
 	FD_CLR(i, &master);
 	close(sd);
 	cout<<"Client disconnesso."<<endl;
-	exit(1);
+	exit(0);
 }
 
 bool check_command_injection(string buf)
