@@ -46,7 +46,7 @@ fstream fp;
 uint32_t seqno; //numero di sequenza pacchetti
 uint32_t seqno_r; //num sequenza ricevuto
 bool secure_connection = false;
-string cert_server = "../Certificati_PrivateKey/Server_cert.pem";
+string cert_server = "../certif/Server_cert.pem";
 X509_STORE *store;
 char *key_encr, *key_auth, *init_v, *nonce_a, *nonce_b; //nonce_a= ricevuto dal client
 
@@ -106,7 +106,7 @@ bool create_ca_store()
 	
 	//aggiungo cert della trusted CA
 	X509 *ca_cert;
-	fp = fopen("../Certificati_PrivateKey/SimpleAuthorityCA_cert.pem", "r");
+	fp = fopen("../certif/SimpleAuthorityCA_cert.pem", "r");
 	if(!fp) return false;
 	ca_cert = PEM_read_X509(fp, NULL, NULL, NULL);
 	X509_STORE_add_cert(store, ca_cert);
@@ -115,7 +115,7 @@ bool create_ca_store()
 	
 	//aggiungo lista cert revocati
 	X509_CRL *crl;
-	fp = fopen("../Certificati_PrivateKey/SimpleAuthorityCA_crl.pem", "r");
+	fp = fopen("../certif/SimpleAuthorityCA_crl.pem", "r");
 	if(!fp) return false;
 	crl = PEM_read_X509_CRL(fp, NULL, NULL, NULL);
 	fclose(fp);
@@ -378,7 +378,7 @@ void recv_file(string filename)
 	long long int ricevuti = 0;
 	int count=0, progress = 0;
 	
-	string path ="./files/";
+	string path ="../serv_files/";
 	path.append(filename);
 
 	fp.open(path.c_str(), ios::out | ios::binary); //creo il file con il nome passato
@@ -487,7 +487,7 @@ bool search_file(string filename)
 {
 	DIR *d;
 	struct dirent *dir;
-	d = opendir("./files");
+	d = opendir("../serv_files");
 	if(d)
 	{
 		while((dir = readdir(d)) != NULL)
@@ -506,7 +506,7 @@ void list(int sock)
 
 	string lista_file = "\n";
 	
-	d = opendir("./files");
+	d = opendir("../serv_files");
 	if(d)
 	{
 		while((dir = readdir(d)) != NULL) //legge due righe che non ci interessano, una ".." e l'altra "." ---> risolvere
@@ -780,7 +780,7 @@ while(1){
 							
 							//4) se esiste, procedo all'invio
 							
-							string path ="./files/";
+							string path ="../serv_files/";
 							path.append(filename);
 							
 							fp.open(path.c_str(), ios::in | ios::binary); //apro il file in modalità binaria

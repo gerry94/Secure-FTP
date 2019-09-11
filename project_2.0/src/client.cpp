@@ -40,7 +40,7 @@ void send_file();
 void recvData(int);
 void recv_file(string,int);
 bool check_command_injection(string);
-bool check_file_existance(string);
+bool search_file(string);
 int check_seqno(uint32_t);
 void send_seqno(int);
 void recv_seqno(int);
@@ -68,7 +68,7 @@ fstream fp; //puntatore al file da aprire
 //==========variabili cybersecurity===========
 uint32_t seqno; //numero di sequenza pacchetti
 uint32_t seqno_r; //num seq ricevuto
-string cert_name = "./Certificati_PrivateKey/gerardo_cert.pem";
+string cert_name = "../certif/gerardo_cert.pem";
 X509_STORE *store;
 char *nonce_client;
 //============================================
@@ -80,7 +80,7 @@ bool create_ca_store()
 	
 	//aggiungo cert della trusted CA
 	X509 *ca_cert;
-	fp = fopen("./Certificati_PrivateKey/SimpleAuthorityCA_cert.pem", "r");
+	fp = fopen("../certif/SimpleAuthorityCA_cert.pem", "r");
 	if(!fp) return false;
 	ca_cert = PEM_read_X509(fp, NULL, NULL, NULL);
 	X509_STORE_add_cert(store, ca_cert);
@@ -89,7 +89,7 @@ bool create_ca_store()
 	
 	//aggiungo lista cert revocati
 	X509_CRL *crl;
-	fp = fopen("./Certificati_PrivateKey/SimpleAuthorityCA_crl.pem", "r");
+	fp = fopen("../certif/SimpleAuthorityCA_crl.pem", "r");
 	if(!fp) return false;
 	crl = PEM_read_X509_CRL(fp, NULL, NULL, NULL);
 	fclose(fp);
@@ -265,15 +265,16 @@ while(1)
 				    		else 
 				    		{
 				    			//controllare esistenza file
-				    			if(!check_file_existance(net_buf)) { cout<<"File inesistente."<<endl; break; }
+				    			if(!search_file(net_buf)) { cout<<"File inesistente."<<endl; break; }
 				    			
 				    			send_status(stato);				    			
 				    			send_data(net_buf, net_buf.length()); //invio il nome file
 				    			
-				    			//ricevo conferma esistenza file
+				    			
 				    			recv_seqno(sd);
 				    			if(check_seqno(seqno_r) == -1) exit(1);
 				    			
+				    			//ricevo conferma esistenza file
 							bool found;
 							if(recv(sd, &found, sizeof(found), 0) == -1) //sostituito new_sd con i
 							{
@@ -289,7 +290,9 @@ while(1)
 							}
 				    			else
 				    			{
-				    				fp.open(net_buf.c_str(), ios::in | ios::binary);			    
+				    				string path = "../download/";
+				    				path.append(net_buf);
+				    				fp.open(path.c_str(), ios::in | ios::binary);			    
 				    				if(!fp) { cerr<<"ERRORE: apertura file non riuscita."<<endl; break; }
 				    				cout<<"Apertura file eseguita correttamente."<<endl;
 				    				
@@ -308,9 +311,9 @@ while(1)
 							cout<<"Carattere non consentito"<<endl;	
 							break;						
 						}
-						
+										    		
 						//controllo esistenza file in locale
-						if(check_file_existance(net_buf.c_str()))
+						if(search_file(net_buf.c_str()))
 						{
 							char c;
 							cout<<"ATTENZIONE: Esiste già un file con questo nome. Sovrascriverlo? (s/n):"<<endl;
@@ -420,8 +423,11 @@ void recv_file(string filename, int new_sd)
 	long long int mancanti = fsize;
 	long long int ricevuti = 0;
 	int count=0, progress = 0;
-
-	fp.open(filename.c_str(), ios::out | ios::binary); //creo il file con il nome passato
+	
+	string path = "../download/";
+	path.append(filename);
+	
+	fp.open(path.c_str(), ios::out | ios::binary); //creo il file con il nome passato
 	
 	if(!fp) { cerr<<"Errore apertura file."<<endl; exit(1); }
 	
@@ -489,6 +495,7 @@ void recv_file(string filename, int new_sd)
 	if(ricevuti != fsize)
 	{
 		cerr<<"Errore di trasferimento."<<endl;
+		remove(filename.c_str()); //elimino il file
 		return;
 	}
 							
@@ -753,11 +760,11 @@ bool check_command_injection(string buf)
 		return false;
 }
 
-bool check_file_existance(string buf) //return true se il file esiste
+bool search_file(string buf) //return true se il file esiste
 {
 	DIR *d;
 	struct dirent *dir;
-	d = opendir(".");
+	d = opendir("../download");
 	if(d)
 	{
 		while((dir = readdir(d)) != NULL)
