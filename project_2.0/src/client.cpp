@@ -16,6 +16,10 @@
 #include <openssl/rand.h>
 #include <stdlib.h>
 #include <time.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/conf.h>
+#include <openssl/err.h>
 
 using namespace std;
 
@@ -23,8 +27,8 @@ using namespace std;
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
 # define NONCE_LENGTH 4 //byte
-# define IV_LENGTH 6
-# define SESSION_KEY_LEN 8
+# define IV_LENGTH 1
+# define SESSION_KEY_LEN 16
 
 //========prototipi funzioni============
 bool recv_ack();
@@ -71,7 +75,56 @@ uint32_t seqno_r; //num seq ricevuto
 string cert_name = "../certif/gerardo_cert.pem";
 X509_STORE *store;
 char *nonce_client;
+string key_auth, key_encr, init_v;
 //============================================
+
+int encrypt(char *plaintext, int plaintext_len, string key, string iv, char *ciphertext)
+{
+	EVP_CIPHER_CTX *ctx;
+
+	int outl, ciphertext_len;
+
+	// Create and initialise the context 
+	ctx = EVP_CIPHER_CTX_new();
+
+	// Encrypt init
+	EVP_EncryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key.c_str(), (const unsigned char*)iv.data());
+	
+	if((ciphertext_len = EVP_EncryptUpdate(ctx, (unsigned char*)ciphertext, &outl, (unsigned char*)plaintext, plaintext_len))==0)
+	{
+		cerr<<"Errore di EVP_EncryptUpdate."<<endl;
+		return 0;
+	}
+	ciphertext_len = outl;
+
+	EVP_CIPHER_CTX_free(ctx);
+
+	return ciphertext_len;
+}
+
+int decrypt(char *ciphertext, int ciphertext_len, string key, string iv, char *plaintext)
+{
+	EVP_CIPHER_CTX *ctx;
+
+	int outl, plaintext_len;
+
+	// Create and initialise the context 
+	ctx = EVP_CIPHER_CTX_new();
+
+	// Decrypt Init
+	EVP_DecryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key.c_str(), (const unsigned char*)iv.data());
+
+	if((plaintext_len = EVP_DecryptUpdate(ctx, (unsigned char*)plaintext, &outl, (unsigned char*)ciphertext, ciphertext_len))==0)
+	{
+		cerr<<"Errore di EVP_DecryptUpdate."<<endl;
+		return 0;
+	}
+	plaintext_len = outl;
+	// Clean the context!
+	EVP_CIPHER_CTX_free(ctx);
+
+	return plaintext_len;
+}
 
 bool create_ca_store()
 {
@@ -187,14 +240,16 @@ int main()
 	}
 	
 	recvData(sd);
-	string key_encr = net_buf;
+	key_encr = net_buf;
+	//BIO_dump_fp(stdout, (const char*)key_encr.c_str(), len);
 	
 	recvData(sd);
-	string key_auth = net_buf;
+	key_auth = net_buf;
 	
 	recvData(sd);
-	string init_v = net_buf;
-	
+	init_v = net_buf;
+	//init_v.resize(IV_LENGTH);
+
 	recvData(sd);
 	string nonce_a = net_buf;
 	
@@ -515,7 +570,9 @@ void send_file()
 	fp.seekg(0, fp.beg); //mi riposizione all'inizio
 	
 	cout<<"Lunghezza file(Byte): "<<fsize<<endl;
-	char *buf = new char[CHUNK];
+	
+	char *ptx_buf = new char[CHUNK]; //buffer per lettura da file
+	char *ctx_buf = new char[CHUNK]; //buffer (cifrato) da trasmettere sul socket
 	
 	if(fsize >= 4200000000) lmsg = htonl(0);
 	else lmsg = htonl(fsize); //invio lunghezza file (max 4.2 GiB)
@@ -538,15 +595,17 @@ void send_file()
 	
 	long long int mancanti = fsize;
 	long long int inviati = 0;
-	int count=0, progress=0;
-
+	int count=0, progress=0, ret=0;
 	while((mancanti-CHUNK)>0)
 	{
 		//invio il numero di sequenza
 		send_seqno(sd);
 		
-		fp.read(buf, CHUNK); //ora buf contiene il contenuto del file letto
-		int n = send(sd, (void*)buf, CHUNK, 0);
+		fp.read(ptx_buf, CHUNK); //ora buf contiene il contenuto del file letto
+		
+		if((ret = encrypt(ptx_buf, CHUNK, key_encr, init_v, ctx_buf)) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
+
+		int n = send(sd, (void*)ctx_buf, CHUNK, 0);
 		if(n == -1)
 		{
 			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
@@ -560,17 +619,22 @@ void send_file()
 		progress = (inviati*100)/fsize;
 		cout<<"\r"<<progress<<"%";	
 	}
+	delete[] ptx_buf;
+	delete[] ctx_buf;
+
 	if(mancanti!=0)
 	{
-		delete[] buf; //occhio !!
-		char *buf = new char[mancanti];
+		char *ctx_buf = new char[mancanti];
+		char *ptx_buf = new char[mancanti];
 		
 		//invio il numero di sequenza
 		send_seqno(sd);
 		
-		fp.read(buf, mancanti); //ora buf contiene il contenuto del file letto
-		
-		int n = send(sd, (void*)buf, mancanti, 0);
+		fp.read(ptx_buf, mancanti); //ora buf contiene il contenuto del file letto
+
+		if((ret = encrypt(ptx_buf, mancanti, key_encr, init_v, ctx_buf)) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
+
+		int n = send(sd, (void*)ctx_buf, mancanti, 0);
 		if(n == -1)
 		{
 			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
@@ -638,14 +702,12 @@ void send_data(string buf, int buf_len)
 {
 	//invio seqno
 	send_seqno(sd);
-			
-	//len = strlen(buf)+48; //32 è la dim del MAC + 16 la dim di AES = 48
-	//len = buf.length();
+
 	lmsg = htons(buf_len);
 	
 	if(send(sd, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
 	{
-		cerr<<"Errore di send(size)."<<endl;
+		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
 		exit(1);
 	}
 	seqno++;
@@ -653,7 +715,7 @@ void send_data(string buf, int buf_len)
 	send_seqno(sd);
         if(send(sd, (void*)buf.c_str(), buf_len, 0) == -1)
         {
-        	cerr<<"Errore di send(buf)."<<endl;;
+        	cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
         	exit(1);
         }
         seqno++;        
@@ -667,7 +729,7 @@ void send_status(int stato)
 	
 	if(send(sd, (void*)&stato, sizeof(stato), 0)== -1)
 	{
-		cerr<<"Errore di send_status():"<<endl;
+		cerr<<"Errore di send_status(). Codice: "<<errno<<endl;
 		exit(1);
 	}
 	

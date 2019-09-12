@@ -15,6 +15,10 @@
 #include <openssl/rand.h>
 #include <time.h>
 #include <cstring>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/conf.h>
+#include <openssl/err.h>
 
 using namespace std;
 
@@ -22,8 +26,8 @@ using namespace std;
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
 # define NONCE_LENGTH 4 //byte
-# define IV_LENGTH 6 //initialization value (controllare la dimensione (byte)
-# define SESSION_KEY_LEN 8 //controllare dim
+# define IV_LENGTH 1 //initialization value (controllare la dimensione (byte)
+# define SESSION_KEY_LEN 16 //controllare dim
 
 //========variabili socket========
 int ret, sd, new_sd, porta;
@@ -48,9 +52,57 @@ uint32_t seqno_r; //num sequenza ricevuto
 bool secure_connection = false;
 string cert_server = "../certif/Server_cert.pem";
 X509_STORE *store;
-char *key_encr, *key_auth, *init_v, *nonce_a, *nonce_b; //nonce_a= ricevuto dal client
-
+X509 *cert;
+string key_encr,init_v;
+char *key_auth, *nonce_a, *nonce_b; //nonce_a= ricevuto dal client
 //============================================
+
+int decrypt(char *ciphertext, int ciphertext_len, string key, string iv, char *plaintext)
+{
+	EVP_CIPHER_CTX *ctx;
+
+	int outl, plaintext_len;
+
+	// Create and initialise the context 
+	ctx = EVP_CIPHER_CTX_new();
+
+	// Decrypt Init
+	EVP_DecryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key.c_str(), (const unsigned char*)iv.data());
+
+	if((plaintext_len = EVP_DecryptUpdate(ctx, (unsigned char*)plaintext, &outl, (unsigned char*)ciphertext, ciphertext_len))==0)
+	{
+		cerr<<"Errore di EVP_DecryptUpdate."<<endl;
+		return 0;
+	}
+	plaintext_len = outl;
+	// Clean the context!
+	EVP_CIPHER_CTX_free(ctx);
+
+	return plaintext_len;
+}
+
+int encrypt(char *plaintext, int plaintext_len, string key, string iv, char *ciphertext)
+{
+	EVP_CIPHER_CTX *ctx;
+
+	int outl, ciphertext_len;
+
+	/* Create and initialise the context */
+	ctx = EVP_CIPHER_CTX_new();
+
+	// Encrypt init
+	EVP_EncryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key.c_str(), (const unsigned char*)iv.data());
+	
+	if((ciphertext_len = EVP_EncryptUpdate(ctx, (unsigned char*)ciphertext, &outl, (unsigned char*)plaintext, plaintext_len))==0)
+	{
+		cerr<<"Errore di EVP_EncryptUpdate."<<endl;
+		return 0;
+	}
+
+	EVP_CIPHER_CTX_free(ctx);
+
+	return ciphertext_len;
+}
 
 void send_ack(int sock, bool ack)
 {
@@ -81,24 +133,6 @@ char* create_rand_val(int val_length)
 	return val;
 }
 
-/*bool send_nonce(char *nonce)
-{
-	lmsg = htons(NONCE_LENGTH);
-	if(send(sd, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
-	{
-		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
-		return false;
-	}
-
-	if(send(sd, (void*)nonce, NONCE_LENGTH, 0)== -1)
-	{
-		cerr<<"Errore di send(nonce). Codice: "<<errno<<endl;
-		return false;
-	}
-
-	return true;
-}*/
-
 bool create_ca_store()
 {
 	store = X509_STORE_new();
@@ -128,31 +162,14 @@ bool create_ca_store()
 	return true;
 }
 
-bool recv_nonce(int sd)
-{
-	// Attendo dimensione del messaggio 
-	/*if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
-	{
-		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
-		return false;
-	}
-	
-	len = ntohs(lmsg); // Rinconverto in formato host*/
-	
+bool recv_authentication(int sd)
+{        
 	nonce_a = new char[NONCE_LENGTH];
-	
 	if(recv(sd, (void*)nonce_a, NONCE_LENGTH, 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione nonce_a. Codice: "<<errno<<endl;
 		return false;
 	}
-	return true;
-}
-
-bool recv_authentication(int sd)
-{        
-	if(!recv_nonce(sd))
-		return false;
 
 	if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
 	{
@@ -169,7 +186,7 @@ bool recv_authentication(int sd)
 		return false;
 	}
 
-	X509 *cert = d2i_X509(NULL, (const unsigned char**)&buf, len);
+	cert = d2i_X509(NULL, (const unsigned char**)&buf, len);
 	if(!cert) return false;
 	
 	X509_NAME *subject_name = X509_get_subject_name(cert);
@@ -369,14 +386,15 @@ void recv_file(string filename)
 		return;
 	}
 								
-	char *buf = new char[CHUNK];
+	char *ctx_buf = new char[CHUNK];
+	char *ptx_buf = new char[CHUNK];
 //il flag WAITALL indica che la recv aspetta TUTTI i pacchetti. Senza ne riceve solo uno e quindi file oltre una certa dimensione risultano incompleti							
 	
 	cout<<"Ricezione di "<<filename<<" in corso..."<<endl;
 	
 	long long int mancanti = ctx_len;
 	long long int ricevuti = 0;
-	int count=0, progress = 0;
+	int count=0, progress = 0, ret=0;
 	
 	string path ="../serv_files/";
 	path.append(filename);
@@ -396,18 +414,21 @@ void recv_file(string filename)
 			exit(1); //gestire meglio la chiusura
 		}
 		
-		int n = recv(new_sd, (void*)buf, CHUNK, MSG_WAITALL);
+		int n = recv(new_sd, (void*)ctx_buf, CHUNK, MSG_WAITALL);
+
 		if(n == -1)
 		{
 			cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 			exit(1);
 		}
+		if((ret = decrypt(ctx_buf, CHUNK, key_encr, init_v, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 
 		ricevuti += n;
 		mancanti -= n;
 		
 		seqno++;
-		fp.write(buf, CHUNK);
+
+		fp.write(ptx_buf, CHUNK);
 
 		//percentuale di progresso
 		progress = (ricevuti*100)/ctx_len;
@@ -415,10 +436,13 @@ void recv_file(string filename)
 
 		count++;
 	}
+	delete[] ptx_buf;
+	delete[] ctx_buf;
+	
 	if(mancanti != 0)
 	{
-		delete[] buf;
-		char *buf = new char[mancanti];
+		char *ptx_buf = new char[mancanti];
+		char *ctx_buf = new char[mancanti];
 		
 		//ricevo numero di sequenza dal client
 		recv_seqno(new_sd);
@@ -429,15 +453,19 @@ void recv_file(string filename)
 			exit(1); //gestire meglio la chiusura
 		}
 		
-		int n = recv(new_sd, (void*)buf, mancanti, MSG_WAITALL);
+		int n = recv(new_sd, (void*)ctx_buf, mancanti, MSG_WAITALL);
+
 		if(n == -1)
 		{
 			cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 			exit(1);
 		}
-		ricevuti += n;
-		fp.write(buf, mancanti);
+		if((ret = decrypt(ctx_buf, mancanti, key_encr, init_v, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
+
 		seqno++;
+		ricevuti += n;
+		
+		fp.write(ptx_buf, mancanti);
 		
 		progress = (ricevuti*100)/ctx_len;
 		cout<<"\r"<<progress<<"%";
@@ -531,7 +559,8 @@ void send_file(int sd)
 	fp.seekg(0, fp.beg); //mi riposizione all'inizio
 	
 	cout<<"Lunghezza file(Byte): "<<fsize<<endl;
-	char *buf = new char[CHUNK];
+	char *ptx_buf = new char[CHUNK]; //buffer per lettura da file
+	char *ctx_buf = new char[CHUNK]; //buffer (cifrato) da trasmettere sul socket
 	
 	lmsg = htonl(fsize); //invio lunghezza file
 	
@@ -554,8 +583,10 @@ void send_file(int sd)
 		//invio il numero di sequenza
 		send_seqno(sd);
 		
-		fp.read(buf, CHUNK); //ora buf contiene il contenuto del file letto
-		int n = send(sd, (void*)buf, CHUNK, 0);
+		fp.read(ptx_buf, CHUNK); //ora buf contiene il contenuto del file letto
+		
+		if(encrypt(ptx_buf, CHUNK, key_encr, init_v, ctx_buf) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
+		int n = send(sd, (void*)ctx_buf, CHUNK, 0);
 		if(n == -1)
 		{
 			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
@@ -569,17 +600,22 @@ void send_file(int sd)
 		progress = (inviati*100)/fsize;
 		cout<<"\r"<<progress<<"%";	
 	}
+	delete[] ptx_buf;
+	delete[] ctx_buf;
+	
 	if(mancanti!=0)
 	{
-		delete[] buf; //occhio !!
-		char *buf = new char[mancanti];
+		char *ctx_buf = new char[mancanti];
+		char *ptx_buf = new char[mancanti];
 		
 		//invio il numero di sequenza
 		send_seqno(sd);
 		
-		fp.read(buf, mancanti); //ora buf contiene il contenuto del file letto
+		fp.read(ptx_buf, mancanti); //ora buf contiene il contenuto del file letto
 		
-		int n = send(sd, (void*)buf, mancanti, 0);
+		if(encrypt(ptx_buf, mancanti, key_encr, init_v, ctx_buf) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
+		
+		int n = send(sd, (void*)ctx_buf, mancanti, 0);
 		if(n == -1)
 		{
 			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
@@ -593,7 +629,100 @@ void send_file(int sd)
 	cout<<endl;
 	cout<<"Inviato file in "<<count<<" pacchetti."<<endl;
 	fp.close();
-}	
+}
+
+void create_secure_session(int i)
+{
+	//generare Ks, Ka, IV e nonce_b
+	key_encr = create_rand_val(SESSION_KEY_LEN);
+	//cout<<"key_encr iniziale: "<<endl;
+	//BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
+	
+	key_auth = create_rand_val(SESSION_KEY_LEN);
+
+	//per qualche motivo questa genera su 4 byte a caso --> sistemare
+	init_v = create_rand_val(IV_LENGTH);
+	init_v.resize(IV_LENGTH);
+
+	nonce_b = create_rand_val(NONCE_LENGTH);
+
+	/*
+	//1) prendere kpub del client dal certificato
+	
+ 	EVP_PKEY *evp_cli_pubk = X509_get_pubkey(cert);
+ 	int cli_pubk_len = i2d_PublicKey(evp_cli_pubk, NULL);
+ 	
+ 	unsigned char *cli_pubk = new unsigned char[cli_pubk_len];
+ 	
+ 	i2d_PublicKey(evp_cli_pubk, &cli_pubk);
+ 	
+ 	//BIO_dump_fp(stdout, (const char*)cli_pubk, cli_pubk_len);
+	
+	//2) prendere kpriv del server dal file pem
+	FILE *fp = fopen("../certif/Server_key.pem", "rb");
+	if(!fp) { cerr<<"errore apertura serv_key.pem."<<endl; exit(1); }
+	
+	EVP_PKEY *evp_serv_privk = PEM_read_PrivateKey(fp, NULL, NULL, NULL);
+	
+	int serv_privk_len = i2d_PrivateKey(evp_serv_privk, NULL);
+ 	unsigned char *serv_privk = new unsigned char[serv_privk_len];
+
+ 	i2d_PrivateKey(evp_serv_privk, &serv_privk);
+ 	//BIO_dump_fp(stdout, (const char*)serv_privk, serv_privk_len);
+ 	
+ 	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+ 	unsigned char iv[16];
+ 	
+ 	if(EVP_SealInit(ctx, EVP_aes_128_cbc(), &cli_pubk, &cli_pubk_len, iv, &evp_cli_pubk, 1) != 1) { cerr<<"errore seal."<<endl; exit(1); }
+ 	string outs, eks, ivs;
+ 	
+ 	eks.assign((char*)cli_pubk, cli_pubk_len);
+ 	ivs.assign((char*)iv, 16);
+ 	
+ 	unsigned char *out = new unsigned char[SESSION_KEY_LEN+16];
+ 	int outl = 0, cipher_len=0;
+ 	
+ 	if(EVP_SealUpdate(ctx, out, &outl, (unsigned char*)key_encr.c_str(), SESSION_KEY_LEN) != 1) { cerr<<"errore SealUpdate."<<endl; exit(1); }
+ 	cipher_len = outl;
+ 	
+ 	if(EVP_SealFinal(ctx, out+cipher_len, &outl) != 1) { cerr<<"errore SealFinal."<<endl; exit(1); }
+ 	cipher_len += outl;
+ 	
+ 	outs.assign((char*)out, cipher_len);
+ 	
+ 	EVP_CIPHER_CTX_free(ctx);
+ 	cout<<"key_encr cifrata:"<<endl;
+ 	BIO_dump_fp(stdout, (const char*)key_encr.c_str(), cipher_len);
+ 	*/
+	//3) cifrare con kpub client e kpriv serv (ripetere per k_enr e k_auth)
+	send_data(key_encr, SESSION_KEY_LEN, i);
+	send_data(key_auth, SESSION_KEY_LEN, i);
+	
+	//4)iv e nonce_a vanno cifrati con kpriv serv
+	send_data(init_v, IV_LENGTH, i);
+	send_data(nonce_a, NONCE_LENGTH, i);
+	send_data(nonce_b, NONCE_LENGTH, i);
+
+	char *tmp_buf = new char[NONCE_LENGTH];
+	if(recv(i, (void*)tmp_buf, NONCE_LENGTH, 0) == -1)
+	{
+		cerr<<"Errore in fase di ricezione nonce_b. Codice: "<<errno<<endl;
+		exit(1);
+	}
+	net_buf = tmp_buf;
+	net_buf.resize(NONCE_LENGTH);
+	delete[] tmp_buf;
+
+	//5) net_buf contiente nonce_b cifrato con kpriv client e lo dobbiamo decifrare con kpub client
+	
+	//mi appoggio ad una stringa altrimenti non funziona l'operatore di confront
+	string app(nonce_b); 
+
+	app.resize(NONCE_LENGTH);
+
+	if(net_buf == app) cout<<"nonce_b verificato."<<endl;
+	else cout<<"ERRORE verifica nonce_b."<<endl;	
+}
 
 int main()
 {
@@ -672,37 +801,8 @@ while(1){
 								exit(1);
 							}
 							else
-							{	//generare Ks, Ka, IV e nonce_b
-								key_encr = create_rand_val(SESSION_KEY_LEN);
-								key_auth = create_rand_val(SESSION_KEY_LEN);
-								init_v = create_rand_val(IV_LENGTH);
-								nonce_b = create_rand_val(NONCE_LENGTH);
-								
-								//string s(key_encr);
-								send_data(key_encr,SESSION_KEY_LEN, i);
-								send_data(key_auth, SESSION_KEY_LEN, i);
-								send_data(init_v, IV_LENGTH, i);
-								send_data(nonce_a, NONCE_LENGTH, i);
-								send_data(nonce_b, NONCE_LENGTH, i);
-								
-								char *tmp_buf = new char[NONCE_LENGTH];
-								if(recv(i, (void*)tmp_buf, NONCE_LENGTH, 0) == -1)
-								{
-									cerr<<"Errore in fase di ricezione buffer dati. "<<endl;
-									exit(1);
-								}
-								net_buf = tmp_buf;
-								net_buf.resize(NONCE_LENGTH);
-								delete[] tmp_buf;
-								
-								//mi appoggio ad una stringa altrimenti non funziona l'operatore di confront
-								string app(nonce_b); 
-								
-								app.resize(NONCE_LENGTH);
-								
-								if(net_buf == app) cout<<"nonce_b verificato."<<endl;
-								else cout<<"ERRORE verifica nonce_b."<<endl;
-								
+							{
+								create_secure_session(i);
 								//se tutto va a buon fine setto la secure_connection	
 								secure_connection = true;
 							}
