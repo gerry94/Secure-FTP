@@ -26,7 +26,7 @@ using namespace std;
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
 # define NONCE_LENGTH 4 //byte
-# define IV_LENGTH 1 //initialization value (controllare la dimensione (byte)
+# define IV_LENGTH 16 //initialization value (controllare la dimensione (byte)
 # define SESSION_KEY_LEN 16 //controllare dim
 
 //========variabili socket========
@@ -59,13 +59,14 @@ char *key_auth, *nonce_a, *nonce_b; //nonce_a= ricevuto dal client
 
 int decrypt(char *ciphertext, int ciphertext_len, string key, string iv, char *plaintext)
 {
+	//BIO_dump_fp(stdout, (const char*)ciphertext, ciphertext_len);
 	EVP_CIPHER_CTX *ctx;
 
 	int outl, plaintext_len;
 
 	// Create and initialise the context 
 	ctx = EVP_CIPHER_CTX_new();
-
+	
 	// Decrypt Init
 	EVP_DecryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key.c_str(), (const unsigned char*)iv.data());
 
@@ -392,8 +393,7 @@ void recv_file(string filename)
 	
 	cout<<"Ricezione di "<<filename<<" in corso..."<<endl;
 	
-	long long int mancanti = ctx_len;
-	long long int ricevuti = 0;
+	long long int mancanti = ctx_len, ricevuti = 0;
 	int count=0, progress = 0, ret=0;
 	
 	string path ="../serv_files/";
@@ -414,8 +414,7 @@ void recv_file(string filename)
 			exit(1); //gestire meglio la chiusura
 		}
 		
-		int n = recv(new_sd, (void*)ctx_buf, CHUNK, MSG_WAITALL);
-
+		int n = recv(new_sd, (void*)ctx_buf, CHUNK, MSG_WAITALL);		
 		if(n == -1)
 		{
 			cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
@@ -454,7 +453,6 @@ void recv_file(string filename)
 		}
 		
 		int n = recv(new_sd, (void*)ctx_buf, mancanti, MSG_WAITALL);
-
 		if(n == -1)
 		{
 			cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
@@ -635,15 +633,13 @@ void create_secure_session(int i)
 {
 	//generare Ks, Ka, IV e nonce_b
 	key_encr = create_rand_val(SESSION_KEY_LEN);
-	//cout<<"key_encr iniziale: "<<endl;
-	//BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
+	/*cout<<"key_encr iniziale: "<<endl;
+	BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);*/
 	
 	key_auth = create_rand_val(SESSION_KEY_LEN);
 
-	//per qualche motivo questa genera su 4 byte a caso --> sistemare
 	init_v = create_rand_val(IV_LENGTH);
-	init_v.resize(IV_LENGTH);
-
+	
 	nonce_b = create_rand_val(NONCE_LENGTH);
 
 	/*

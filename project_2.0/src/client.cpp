@@ -27,7 +27,7 @@ using namespace std;
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
 # define NONCE_LENGTH 4 //byte
-# define IV_LENGTH 1
+# define IV_LENGTH 16
 # define SESSION_KEY_LEN 16
 
 //========prototipi funzioni============
@@ -241,15 +241,13 @@ int main()
 	
 	recvData(sd);
 	key_encr = net_buf;
-	//BIO_dump_fp(stdout, (const char*)key_encr.c_str(), len);
 	
 	recvData(sd);
 	key_auth = net_buf;
 	
 	recvData(sd);
 	init_v = net_buf;
-	//init_v.resize(IV_LENGTH);
-
+	
 	recvData(sd);
 	string nonce_a = net_buf;
 	
@@ -596,6 +594,8 @@ void send_file()
 	long long int mancanti = fsize;
 	long long int inviati = 0;
 	int count=0, progress=0, ret=0;
+	cout<<endl<<"CIPHERTEXT: "<<endl;
+	
 	while((mancanti-CHUNK)>0)
 	{
 		//invio il numero di sequenza
@@ -604,7 +604,7 @@ void send_file()
 		fp.read(ptx_buf, CHUNK); //ora buf contiene il contenuto del file letto
 		
 		if((ret = encrypt(ptx_buf, CHUNK, key_encr, init_v, ctx_buf)) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
-
+		
 		int n = send(sd, (void*)ctx_buf, CHUNK, 0);
 		if(n == -1)
 		{
@@ -633,7 +633,7 @@ void send_file()
 		fp.read(ptx_buf, mancanti); //ora buf contiene il contenuto del file letto
 
 		if((ret = encrypt(ptx_buf, mancanti, key_encr, init_v, ctx_buf)) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
-
+		
 		int n = send(sd, (void*)ctx_buf, mancanti, 0);
 		if(n == -1)
 		{
