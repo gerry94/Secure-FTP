@@ -29,6 +29,12 @@ using namespace std;
 # define IV_LENGTH 16 //initialization value (controllare la dimensione (byte)
 # define SESSION_KEY_LEN 16 //controllare dim
 
+// alcuni prototipi
+
+void send_data(string, int, int);
+void recvData(int);
+
+
 //========variabili socket========
 int ret, sd, new_sd, porta;
 unsigned int len;
@@ -37,7 +43,7 @@ fd_set master, read_fds;
 int fdmax;
 bool busy = false; //serve per accettare una sola connessione
 //================================
-
+bool dbgmode = false; //serve oer attivare dei messaggi di debug nelle funzioni
 string net_buf;
 
 string filename;
@@ -55,9 +61,10 @@ X509_STORE *store;
 X509 *cert;
 string key_encr,init_v;
 char *key_auth, *nonce_a, *nonce_b; //nonce_a= ricevuto dal client
+bool key_handshake = true; //indica se siamo in fase di scambio di chiavi in modo da non usare la cifratura con chiavi che sarebbero non ancora inizializzate 
 //============================================
 
-int decrypt(char *ciphertext, int ciphertext_len, string key, string iv, char *plaintext)
+int decrypt(char *ciphertext, int ciphertext_len, char *plaintext)
 {
 	//BIO_dump_fp(stdout, (const char*)ciphertext, ciphertext_len);
 	EVP_CIPHER_CTX *ctx;
@@ -308,11 +315,12 @@ void quit(int i)
 	busy = false;
 	code = 0, seqno=0;
 	secure_connection=false;
+	key_handshake = true;
 }
-
 
 int check_seqno(uint32_t seqno_r) //-1 in caso di errore, 0 se corrisponde
 {
+	if(dbgmode) cout<<"Ricevuto: "<<seqno_r<<" | Atteso: "<<seqno<<endl;
 	if(seqno_r != seqno) //gestire la chiusura della connessione per bene
 	{
 		cerr<<"Numeri di sequenza fuori fase!"<<endl;
@@ -323,6 +331,7 @@ int check_seqno(uint32_t seqno_r) //-1 in caso di errore, 0 se corrisponde
 
 void send_seqno(int sd)
 {
+	if(dbgmode) cout<<"Invio seqno "<<seqno<<" in corso..."<<endl;
 	//invio seqno
 	if(send(sd, (void*)&seqno, sizeof(uint32_t), 0)== -1)
 	{
@@ -333,6 +342,7 @@ void send_seqno(int sd)
 
 void recv_seqno(int sd)
 {
+	if(dbgmode) cout<<"Attendo seqno..."<<endl;
 	//ricevo numero di sequenza dal client
 	if(recv(sd, &seqno_r, sizeof(uint32_t), 0) == -1)
 	{
@@ -340,33 +350,84 @@ void recv_seqno(int sd)
 	    exit(1);
 	}
 }
-void recvData(int sd)
+
+void send_file(int sd)
 {
+	fp.seekg(0, fp.end); //scorro alla fine del file per calcolare la lunghezza (in Byte)
+	long long int fsize = fp.tellg(); //fsize conta il num di "caratteri" e quindi il numero di byte --> occhio che se dim file > del tipo int ci sono problemi
+	fp.seekg(0, fp.beg); //mi riposizione all'inizio
 	
-	recv_seqno(sd);
-	if(check_seqno(seqno_r) == -1) exit(1);
+	cout<<"Lunghezza file(Byte): "<<fsize<<endl;
+	char *ptx_buf = new char[CHUNK]; //buffer per lettura da file
+	char *ctx_buf = new char[CHUNK]; //buffer (cifrato) da trasmettere sul socket
 	
-	// Attendo dimensione del mesaggio                
-	if(recv(sd, (void*)&lmsg, sizeof(uint16_t), 0) == -1)
+	lmsg = htonl(fsize); //invio lunghezza file
+	
+	send_seqno(sd);
+	if(send(sd, &lmsg, sizeof(uint64_t), 0) == -1)
 	{
-		cerr<<"Errore in fase di ricezione lunghezza. "<<endl;
+		cerr<<"Errore di send(size)."<<endl;
 		exit(1);
 	}
 	seqno++;
-	len = ntohs(lmsg); // Rinconverto in formato host
 	
-	recv_seqno(sd);
-	if(check_seqno(seqno_r) == -1) exit(1);
+	cout<<"Invio del file: "<<net_buf<<" in corso..."<<endl;
 	
-	char *tmp_buf = new char[len];
-	if(recv(sd, (void*)tmp_buf, len, 0) == -1)
+	long long int mancanti = fsize;
+	long long int inviati = 0;
+	int count=0, progress=0;
+
+	while((mancanti-CHUNK)>0)
 	{
-		cerr<<"Errore in fase di ricezione buffer dati. "<<endl;
-		exit(1);
+		//invio il numero di sequenza
+		send_seqno(sd);
+		
+		fp.read(ptx_buf, CHUNK); //ora buf contiene il contenuto del file letto
+		
+		if(encrypt(ptx_buf, CHUNK, ctx_buf) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
+		int n = send(sd, (void*)ctx_buf, CHUNK, 0);
+		if(n == -1)
+		{
+			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
+			exit(1);
+		}
+		count++; seqno++;
+
+		mancanti -= n;
+		inviati += n;
+		
+		progress = (inviati*100)/fsize;
+		cout<<"\r"<<progress<<"%";	
 	}
-	net_buf = tmp_buf;
-	net_buf.resize(len);
-	seqno++;
+	delete[] ptx_buf;
+	delete[] ctx_buf;
+	
+	if(mancanti!=0)
+	{
+		char *ctx_buf = new char[mancanti];
+		char *ptx_buf = new char[mancanti];
+		
+		//invio il numero di sequenza
+		send_seqno(sd);
+		
+		fp.read(ptx_buf, mancanti); //ora buf contiene il contenuto del file letto
+		
+		if(encrypt(ptx_buf, mancanti, ctx_buf) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
+		
+		int n = send(sd, (void*)ctx_buf, mancanti, 0);
+		if(n == -1)
+		{
+			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
+			exit(1);
+		}
+		count++; seqno++;
+		inviati += n;
+		progress = (inviati*100)/fsize;
+		cout<<"\r"<<progress<<"%";	
+	}
+	cout<<endl;
+	cout<<"Inviato file in "<<count<<" pacchetti."<<endl;
+	fp.close();
 }
 
 void recv_file(string filename)
@@ -486,12 +547,13 @@ void recv_file(string filename)
 	code=0; //metto il codice neutro per evitare eventuali problemi nello switch
 }
 
-void send_data(string buf, int lung, int sock) 
+void send_data(string buf, int buf_len, int sock) 
 {
-	len = lung; // buf.length();
-	lmsg = htonl(len);
-	
 	send_seqno(sock);
+	
+	len = buf_len; // buf.length();
+	lmsg = htonl(len);	
+	
 	if(send(sock, (void*) &lmsg, sizeof(uint32_t), 0) == -1)
 	{
 		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
@@ -499,14 +561,76 @@ void send_data(string buf, int lung, int sock)
 	}
 	seqno++;
 	send_seqno(sock);
-        
-        if(send(sock, (void*)buf.c_str(), len, 0) == -1)
-        {
-        	cerr<<"Errore di send(buf). Codice: "<<errno<<endl;
-        	exit(1);
-        }
+	
+	char *ctx_buf = new char[buf_len];
+	
+	if(!key_handshake)
+	{
+        	char *ptx_buf = new char[buf_len]; //+1 ?
+		strcpy(ptx_buf, buf.c_str());
+		
+		if(encrypt(ptx_buf, buf_len, ctx_buf) == 0) { cerr<<"Errore di encrypt() nella send_data()."<<endl; exit(1); }
+		delete[] ptx_buf;
+	}
+	else
+		strcpy(ctx_buf, buf.c_str());
+		
+	if(send(sock, (void*)ctx_buf, buf_len, 0) == -1)
+	{
+		cerr<<"Errore di send(buf). Codice: "<<errno<<endl;
+		exit(1);
+	}      
         seqno++;
+        delete[] ctx_buf;
         code = 0;
+}
+
+void recvData(int sd)
+{
+	recv_seqno(sd);
+	if(check_seqno(seqno_r) == -1) exit(1);
+	
+	// Attendo dimensione del mesaggio                
+	if(recv(sd, (void*)&lmsg, sizeof(uint16_t), 0) == -1)
+	{
+		cerr<<"Errore in fase di ricezione lunghezza. "<<endl;
+		exit(1);
+	}
+	seqno++;
+	len = ntohs(lmsg); // Rinconverto in formato host
+	
+	recv_seqno(sd);
+	if(check_seqno(seqno_r) == -1) exit(1);
+	
+	char *tmp_buf = new char[len];
+	if(recv(sd, (void*)tmp_buf, len, 0) == -1)
+	{
+		cerr<<"Errore in fase di ricezione buffer dati. "<<endl;
+		exit(1);
+	}
+
+	if(!key_handshake) //se la cifratura è abilitata
+	{
+		char *ptx_buf = new char[len];
+		if(decrypt(tmp_buf, len, ptx_buf)==0) { cerr<<"Errore di decrypt() nella recvData()"<<endl; exit(1); }
+		net_buf = ptx_buf;
+		delete[] ptx_buf;
+	}
+	else //siamo ancora in fase di handshake chiavi pertanto non devo decifrare normalmente
+	{	
+		net_buf = tmp_buf;
+		net_buf.resize(len);
+	}
+	seqno++;
+	delete[] tmp_buf;
+}
+
+void recv_status(int sd)
+{
+	recvData(sd); //il comando può essere ricevuto solo dopo che la connessioe è sicura quindi viene sempre cifrato
+	code = stoi(net_buf);
+	
+	if(dbgmode) cout<<"Ricevuto comando "<<code<<" dal client."<<endl;
 }
 
 bool search_file(string filename)
@@ -553,92 +677,10 @@ void list(int sock)
 	cout<<"Lista inviata."<<endl;
 }
 
-void send_file(int sd)
-{
-	fp.seekg(0, fp.end); //scorro alla fine del file per calcolare la lunghezza (in Byte)
-	long long int fsize = fp.tellg(); //fsize conta il num di "caratteri" e quindi il numero di byte --> occhio che se dim file > del tipo int ci sono problemi
-	fp.seekg(0, fp.beg); //mi riposizione all'inizio
-	
-	cout<<"Lunghezza file(Byte): "<<fsize<<endl;
-	char *ptx_buf = new char[CHUNK]; //buffer per lettura da file
-	char *ctx_buf = new char[CHUNK]; //buffer (cifrato) da trasmettere sul socket
-	
-	lmsg = htonl(fsize); //invio lunghezza file
-	
-	send_seqno(sd);
-	if(send(sd, &lmsg, sizeof(uint64_t), 0) == -1)
-	{
-		cerr<<"Errore di send(size)."<<endl;
-		exit(1);
-	}
-	seqno++;
-	
-	cout<<"Invio del file: "<<net_buf<<" in corso..."<<endl;
-	
-	long long int mancanti = fsize;
-	long long int inviati = 0;
-	int count=0, progress=0;
-
-	while((mancanti-CHUNK)>0)
-	{
-		//invio il numero di sequenza
-		send_seqno(sd);
-		
-		fp.read(ptx_buf, CHUNK); //ora buf contiene il contenuto del file letto
-		
-		if(encrypt(ptx_buf, CHUNK, key_encr, init_v, ctx_buf) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
-		int n = send(sd, (void*)ctx_buf, CHUNK, 0);
-		if(n == -1)
-		{
-			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
-			exit(1);
-		}
-		count++; seqno++;
-
-		mancanti -= n;
-		inviati += n;
-		
-		progress = (inviati*100)/fsize;
-		cout<<"\r"<<progress<<"%";	
-	}
-	delete[] ptx_buf;
-	delete[] ctx_buf;
-	
-	if(mancanti!=0)
-	{
-		char *ctx_buf = new char[mancanti];
-		char *ptx_buf = new char[mancanti];
-		
-		//invio il numero di sequenza
-		send_seqno(sd);
-		
-		fp.read(ptx_buf, mancanti); //ora buf contiene il contenuto del file letto
-		
-		if(encrypt(ptx_buf, mancanti, key_encr, init_v, ctx_buf) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
-		
-		int n = send(sd, (void*)ctx_buf, mancanti, 0);
-		if(n == -1)
-		{
-			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
-			exit(1);
-		}
-		count++; seqno++;
-		inviati += n;
-		progress = (inviati*100)/fsize;
-		cout<<"\r"<<progress<<"%";	
-	}
-	cout<<endl;
-	cout<<"Inviato file in "<<count<<" pacchetti."<<endl;
-	fp.close();
-}
-
 void create_secure_session(int i)
 {
 	//generare Ks, Ka, IV e nonce_b
-	key_encr = create_rand_val(SESSION_KEY_LEN);
-	/*cout<<"key_encr iniziale: "<<endl;
-	BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);*/
-	
+	key_encr = create_rand_val(SESSION_KEY_LEN);	
 	key_auth = create_rand_val(SESSION_KEY_LEN);
 
 	init_v = create_rand_val(IV_LENGTH);
@@ -720,7 +762,11 @@ void create_secure_session(int i)
 	app.resize(NONCE_LENGTH);
 
 	if(net_buf == app) cout<<"nonce_b verificato."<<endl;
-	else cout<<"ERRORE verifica nonce_b."<<endl;	
+	else cout<<"ERRORE verifica nonce_b."<<endl;
+	
+	key_handshake = false;
+	
+	cout<<"SERVER: Fine hadshake chiavi/certificati."<<endl;	
 }
 
 int main()
@@ -802,26 +848,17 @@ while(1){
 							else
 							{
 								create_secure_session(i);
-								//se tutto va a buon fine setto la secure_connection	
+								//se tutto va a buon fine setto la secure_connection
 								secure_connection = true;
+								cout<<"SERVER: Aperta sessione sicura."<<endl;
 							}
 								
 						}
 				}
             			if(i != sd)
             			{
-            				//ricevo numero di sequenza dal client
-					recv_seqno(i);					
-            				if(check_seqno(seqno_r) == -1) exit(1);
-            				
-            				//ricevo comando dal client
-            				if(recv(i, &code, sizeof(code), 0) == -1) //sostituito new_sd con i
-					{
-					    cerr<<"Errore in fase di ricezione comando: "<<endl;
-					    exit(1);
-		        		}
-		        		seqno++;
-					//cout<<"Ricevuto comando "<<code<<" dal client "<<i<<"."<<endl;
+            				//ricevo numero di sequenza (criptato) dal client
+            				recv_status(i);
 					
 					switch(code)
 					{
@@ -899,7 +936,6 @@ while(1){
 							list(i);
 							break;
 						case 5:
-							//cout<<"SUPERQUIT"<<endl;
 							cout<<"@ @ @ @  @     @  @ @ @ @  @ @ @ @  @ @ @ @  @ @ @ @    @     @  @  @ @ @ @ @"<<endl;
 							cout<<"@        @     @  @     @  @        @     @  @     @    @     @         @    "<<endl;
 							cout<<"  @      @     @  @ @ @ @  @        @ @ @ @  @     @    @     @  @      @    "<<endl;
