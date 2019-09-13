@@ -68,7 +68,7 @@ int decrypt(char *ciphertext, int ciphertext_len, string key, string iv, char *p
 	ctx = EVP_CIPHER_CTX_new();
 	
 	// Decrypt Init
-	EVP_DecryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key.c_str(), (const unsigned char*)iv.data());
+	EVP_DecryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
 
 	if((plaintext_len = EVP_DecryptUpdate(ctx, (unsigned char*)plaintext, &outl, (unsigned char*)ciphertext, ciphertext_len))==0)
 	{
@@ -82,7 +82,7 @@ int decrypt(char *ciphertext, int ciphertext_len, string key, string iv, char *p
 	return plaintext_len;
 }
 
-int encrypt(char *plaintext, int plaintext_len, string key, string iv, char *ciphertext)
+int encrypt(char *plaintext, int plaintext_len, char *ciphertext)
 {
 	EVP_CIPHER_CTX *ctx;
 
@@ -92,7 +92,7 @@ int encrypt(char *plaintext, int plaintext_len, string key, string iv, char *cip
 	ctx = EVP_CIPHER_CTX_new();
 
 	// Encrypt init
-	EVP_EncryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key.c_str(), (const unsigned char*)iv.data());
+	EVP_EncryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
 	
 	if((ciphertext_len = EVP_EncryptUpdate(ctx, (unsigned char*)ciphertext, &outl, (unsigned char*)plaintext, plaintext_len))==0)
 	{
@@ -420,7 +420,7 @@ void recv_file(string filename)
 			cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 			exit(1);
 		}
-		if((ret = decrypt(ctx_buf, CHUNK, key_encr, init_v, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
+		if((ret = decrypt(ctx_buf, CHUNK, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 
 		ricevuti += n;
 		mancanti -= n;
@@ -458,7 +458,7 @@ void recv_file(string filename)
 			cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 			exit(1);
 		}
-		if((ret = decrypt(ctx_buf, mancanti, key_encr, init_v, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
+		if((ret = decrypt(ctx_buf, mancanti, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 
 		seqno++;
 		ricevuti += n;
@@ -546,6 +546,9 @@ void list(int sock)
 	}
 	
 	cout<<"Invio lista file disponibili in corso..."<<endl;
+	
+	//char *ctx_buf = new char[lista_file.length()];
+	//if(encrypt(lista_file, lista_file.length(), ctx_buf)) == 0) { cerr<<"Errore di encrypt(lista_file)."<<endl; exit(1); }
 	send_data(lista_file, lista_file.length(), sock);
 	cout<<"Lista inviata."<<endl;
 }

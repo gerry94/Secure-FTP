@@ -78,7 +78,7 @@ char *nonce_client;
 string key_auth, key_encr, init_v;
 //============================================
 
-int encrypt(char *plaintext, int plaintext_len, string key, string iv, char *ciphertext)
+int encrypt(char *plaintext, int plaintext_len, char *ciphertext)
 {
 	EVP_CIPHER_CTX *ctx;
 
@@ -88,7 +88,7 @@ int encrypt(char *plaintext, int plaintext_len, string key, string iv, char *cip
 	ctx = EVP_CIPHER_CTX_new();
 
 	// Encrypt init
-	EVP_EncryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key.c_str(), (const unsigned char*)iv.data());
+	EVP_EncryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
 	
 	if((ciphertext_len = EVP_EncryptUpdate(ctx, (unsigned char*)ciphertext, &outl, (unsigned char*)plaintext, plaintext_len))==0)
 	{
@@ -102,7 +102,7 @@ int encrypt(char *plaintext, int plaintext_len, string key, string iv, char *cip
 	return ciphertext_len;
 }
 
-int decrypt(char *ciphertext, int ciphertext_len, string key, string iv, char *plaintext)
+int decrypt(char *ciphertext, int ciphertext_len, char *plaintext)
 {
 	EVP_CIPHER_CTX *ctx;
 
@@ -112,7 +112,7 @@ int decrypt(char *ciphertext, int ciphertext_len, string key, string iv, char *p
 	ctx = EVP_CIPHER_CTX_new();
 
 	// Decrypt Init
-	EVP_DecryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key.c_str(), (const unsigned char*)iv.data());
+	EVP_DecryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
 
 	if((plaintext_len = EVP_DecryptUpdate(ctx, (unsigned char*)plaintext, &outl, (unsigned char*)ciphertext, ciphertext_len))==0)
 	{
@@ -603,7 +603,7 @@ void send_file()
 		
 		fp.read(ptx_buf, CHUNK); //ora buf contiene il contenuto del file letto
 		
-		if((ret = encrypt(ptx_buf, CHUNK, key_encr, init_v, ctx_buf)) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
+		if((ret = encrypt(ptx_buf, CHUNK, ctx_buf)) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
 		
 		int n = send(sd, (void*)ctx_buf, CHUNK, 0);
 		if(n == -1)
@@ -632,7 +632,7 @@ void send_file()
 		
 		fp.read(ptx_buf, mancanti); //ora buf contiene il contenuto del file letto
 
-		if((ret = encrypt(ptx_buf, mancanti, key_encr, init_v, ctx_buf)) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
+		if((ret = encrypt(ptx_buf, mancanti, ctx_buf)) == 0) { cerr<<"Errore di encrypt()."<<endl; exit(1); }
 		
 		int n = send(sd, (void*)ctx_buf, mancanti, 0);
 		if(n == -1)
