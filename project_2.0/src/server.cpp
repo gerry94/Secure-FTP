@@ -59,8 +59,8 @@ bool secure_connection = false;
 string cert_server = "../certif/Server_cert.pem";
 X509_STORE *store;
 X509 *cert;
-string key_encr,init_v;
-char *key_auth, *nonce_a, *nonce_b; //nonce_a= ricevuto dal client
+string key_encr,init_v, key_auth;
+char *nonce_a, *nonce_b; //nonce_a= ricevuto dal client
 bool key_handshake = true; //indica se siamo in fase di scambio di chiavi in modo da non usare la cifratura con chiavi che sarebbero non ancora inizializzate 
 //============================================
 
@@ -680,31 +680,29 @@ void list(int sock)
 void create_secure_session(int i)
 {
 	//generare Ks, Ka, IV e nonce_b
-	key_encr = create_rand_val(SESSION_KEY_LEN);	
+	key_encr = create_rand_val(SESSION_KEY_LEN);
+	BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
+	cout<<endl;
 	key_auth = create_rand_val(SESSION_KEY_LEN);
-
-	init_v = create_rand_val(IV_LENGTH);
-	
+	BIO_dump_fp(stdout, (const char*)key_auth.c_str(), SESSION_KEY_LEN);
+	cout<<endl;
+	init_v = create_rand_val(IV_LENGTH);	
 	nonce_b = create_rand_val(NONCE_LENGTH);
 
-	/*
 	//1) prendere kpub del client dal certificato
-	
  	EVP_PKEY *evp_cli_pubk = X509_get_pubkey(cert);
  	int cli_pubk_len = i2d_PublicKey(evp_cli_pubk, NULL);
  	
  	unsigned char *cli_pubk = new unsigned char[cli_pubk_len];
  	
  	i2d_PublicKey(evp_cli_pubk, &cli_pubk);
- 	
- 	//BIO_dump_fp(stdout, (const char*)cli_pubk, cli_pubk_len);
 	
 	//2) prendere kpriv del server dal file pem
 	FILE *fp = fopen("../certif/Server_key.pem", "rb");
 	if(!fp) { cerr<<"errore apertura serv_key.pem."<<endl; exit(1); }
 	
 	EVP_PKEY *evp_serv_privk = PEM_read_PrivateKey(fp, NULL, NULL, NULL);
-	
+	fclose(fp);
 	int serv_privk_len = i2d_PrivateKey(evp_serv_privk, NULL);
  	unsigned char *serv_privk = new unsigned char[serv_privk_len];
 
@@ -712,32 +710,38 @@ void create_secure_session(int i)
  	//BIO_dump_fp(stdout, (const char*)serv_privk, serv_privk_len);
  	
  	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
- 	unsigned char iv[16];
+ 	if(!ctx) { cerr<<"Errore creazione del context."<<endl; }
  	
- 	if(EVP_SealInit(ctx, EVP_aes_128_cbc(), &cli_pubk, &cli_pubk_len, iv, &evp_cli_pubk, 1) != 1) { cerr<<"errore seal."<<endl; exit(1); }
- 	string outs, eks, ivs;
+ 	unsigned char iv[SESSION_KEY_LEN];
+ 	unsigned char *rand_key = new unsigned char[SESSION_KEY_LEN];
+ 	unsigned char *out = new unsigned char[48]; //2 chiavi = 16*2 + altri 16 byte
  	
- 	eks.assign((char*)cli_pubk, cli_pubk_len);
- 	ivs.assign((char*)iv, 16);
+ 	int klen = 0;
  	
- 	unsigned char *out = new unsigned char[SESSION_KEY_LEN+16];
- 	int outl = 0, cipher_len=0;
- 	
- 	if(EVP_SealUpdate(ctx, out, &outl, (unsigned char*)key_encr.c_str(), SESSION_KEY_LEN) != 1) { cerr<<"errore SealUpdate."<<endl; exit(1); }
+ 	if(EVP_SealInit(ctx, EVP_aes_128_cfb8(), &rand_key, &klen, iv, &evp_cli_pubk, 1) != 1) { cerr<<"errore seal."<<endl; exit(1); }
+
+ 	int outl, cipher_len;
+ 	string conc_key = key_encr;
+ 	conc_key.append(key_auth);
+	if(EVP_SealUpdate(ctx, out, &outl, (unsigned char*)conc_key.data(), conc_key.size()) != 1) { cerr<<"errore SealUpdate."<<endl; exit(1); }
  	cipher_len = outl;
  	
  	if(EVP_SealFinal(ctx, out+cipher_len, &outl) != 1) { cerr<<"errore SealFinal."<<endl; exit(1); }
  	cipher_len += outl;
- 	
- 	outs.assign((char*)out, cipher_len);
- 	
+
  	EVP_CIPHER_CTX_free(ctx);
- 	cout<<"key_encr cifrata:"<<endl;
- 	BIO_dump_fp(stdout, (const char*)key_encr.c_str(), cipher_len);
- 	*/
+
 	//3) cifrare con kpub client e kpriv serv (ripetere per k_enr e k_auth)
-	send_data(key_encr, SESSION_KEY_LEN, i);
-	send_data(key_auth, SESSION_KEY_LEN, i);
+	string outs, ivs, eks;
+	outs.assign((char*)out, cipher_len);
+	ivs.assign((char*)iv, IV_LENGTH);
+	eks.assign((char*)rand_key, SESSION_KEY_LEN);
+	
+	send_data(eks, SESSION_KEY_LEN, i);
+	send_data(ivs, IV_LENGTH, i);
+	send_data(outs, cipher_len, i);
+	//send_data(key_encr, SESSION_KEY_LEN, i);
+	//send_data(key_auth, SESSION_KEY_LEN, i);
 	
 	//4)iv e nonce_a vanno cifrati con kpriv serv
 	send_data(init_v, IV_LENGTH, i);

@@ -239,12 +239,65 @@ int main()
 		cerr<<"Certificato server non valido."<<endl;
 		exit(1);
 	}
-
+	
+	//ricevo encrypted key
 	recvData(sd);
-	key_encr = net_buf;
-
+	string ekey = net_buf;
+	
+	//ricevo iv temporaneo
 	recvData(sd);
-	key_auth = net_buf;
+	string tmp_iv = net_buf;
+
+	//ricevo le chiavi concatenate e cifrate
+	recvData(sd);
+	string conc_key = net_buf;
+	
+	//2) prendere kpriv del client dal file pem
+	FILE *ffp = fopen("../certif/gerardo_key.pem", "r");
+	if(!ffp) { cerr<<"errore apertura client_key.pem."<<endl; exit(1); }
+	
+	EVP_PKEY *evp_cli_privk = PEM_read_PrivateKey(ffp, NULL, NULL, NULL);
+	fclose(ffp);
+	
+	/*int cli_privk_len = i2d_PrivateKey(evp_cli_privk, NULL);
+ 	unsigned char *cli_privk = new unsigned char[cli_privk_len];
+
+ 	i2d_PrivateKey(evp_cli_privk, &cli_privk);
+ 	BIO_dump_fp(stdout, (const char*)cli_privk, cli_privk_len);
+ 	*/
+ 	unsigned char *u_iv = new unsigned char[tmp_iv.size()];
+ 	memcpy(u_iv, tmp_iv.data(), tmp_iv.size());
+ 	
+ 	unsigned char *ek = new unsigned char[ekey.size()];
+ 	memcpy(ek, ekey.data(), ekey.size());
+ 	
+	unsigned char *plaintext = new unsigned char[len];
+	int outlen = 0, plainlen = 0;
+	
+	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+	//EVP_CIPHER_CTX_set_padding(ctx, 0);
+	if(EVP_OpenInit(ctx, EVP_aes_128_cfb8(), ek, ekey.size(), u_iv, evp_cli_privk)==0) {
+		cerr<<"errore openInit()."<<endl;
+		ERR_print_errors_fp(stdout);
+		}
+	
+	if(EVP_OpenUpdate(ctx, plaintext, &outlen, (unsigned char*)conc_key.data(), len) == 0)
+		cerr<<"Errore OpenUdpate()"<<endl;
+	plainlen = outlen;
+	
+	if(EVP_OpenFinal(ctx, plaintext+plainlen, &outlen) == 0)
+		cerr<<"Errore OpenFinal()"<<endl;
+	plainlen+=outlen;
+	
+	EVP_CIPHER_CTX_free(ctx);
+	
+	key_encr.copy((char*)plaintext, 16, 0);
+	BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
+	cout<<endl;
+	
+	key_auth.copy((char*)plaintext, 16, 16);
+	BIO_dump_fp(stdout, (const char*)key_auth.c_str(), SESSION_KEY_LEN);
+	cout<<endl;
 
 	recvData(sd);
 	init_v = net_buf;
