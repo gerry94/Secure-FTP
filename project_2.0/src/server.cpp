@@ -1,24 +1,29 @@
+//LIBRERIE C-SOCKET
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <unistd.h>
 #include <sys/select.h>
-#include <string>
-#include <iostream>
-#include <fstream>
-#include <errno.h>
-#include <dirent.h>
+//LIBRERIE OPENSSL
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
 #include <openssl/rand.h>
-#include <time.h>
-#include <cstring>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/conf.h>
 #include <openssl/err.h>
+
+//LIBRERIE VARIE
+#include <unistd.h>
+#include <cstring>
+#include <string>
+#include <regex>
+#include <iostream>
+#include <fstream>
+#include <errno.h>
+#include <dirent.h>
+#include <time.h>
 
 using namespace std;
 
@@ -36,6 +41,7 @@ void recvData(int);
 
 
 //========variabili socket========
+struct timeval tv; //server per impostar il timeout sulle recv()
 int ret, sd, new_sd, porta;
 unsigned int len;
 struct sockaddr_in my_addr, cl_addr;
@@ -47,11 +53,14 @@ bool dbgmode = false; //serve oer attivare dei messaggi di debug nelle funzioni
 string net_buf;
 
 string filename;
-int code;
+int code; //codice comando ricevuto dal client
 long long int ctx_len, lmsg;
 fstream fp;
 
 //==========variabili cybersecurity===========
+EVP_CIPHER_CTX *decr_context;
+EVP_CIPHER_CTX *encr_context; //context usato nelle encrypt/decrypt
+bool first_encr = true, first_decr = true; //var che indica se è la prima volta che uso encr/decr in modo da fare una volta sola la Init()
 
 uint32_t seqno; //numero di sequenza pacchetti
 uint32_t seqno_r; //num sequenza ricevuto
@@ -66,48 +75,38 @@ bool key_handshake = true; //indica se siamo in fase di scambio di chiavi in mod
 
 int decrypt(char *ciphertext, int ciphertext_len, char *plaintext)
 {
-	//BIO_dump_fp(stdout, (const char*)ciphertext, ciphertext_len);
-	EVP_CIPHER_CTX *ctx;
-
 	int outl, plaintext_len;
 
-	// Create and initialise the context 
-	ctx = EVP_CIPHER_CTX_new();
+	if(first_decr) { // Create and initialise the context 
+		decr_context = EVP_CIPHER_CTX_new();
+		EVP_DecryptInit(decr_context, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
+		first_decr = false;
+	}
 	
-	// Decrypt Init
-	EVP_DecryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
-
-	if((plaintext_len = EVP_DecryptUpdate(ctx, (unsigned char*)plaintext, &outl, (unsigned char*)ciphertext, ciphertext_len))==0)
+	if((plaintext_len = EVP_DecryptUpdate(decr_context, (unsigned char*)plaintext, &outl, (unsigned char*)ciphertext, ciphertext_len))==0)
 	{
 		cerr<<"Errore di EVP_DecryptUpdate."<<endl;
 		return 0;
 	}
 	plaintext_len = outl;
-	// Clean the context!
-	EVP_CIPHER_CTX_free(ctx);
 
 	return plaintext_len;
 }
 
 int encrypt(char *plaintext, int plaintext_len, char *ciphertext)
 {
-	EVP_CIPHER_CTX *ctx;
-
 	int outl, ciphertext_len;
-
-	/* Create and initialise the context */
-	ctx = EVP_CIPHER_CTX_new();
-
-	// Encrypt init
-	EVP_EncryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
 	
-	if((ciphertext_len = EVP_EncryptUpdate(ctx, (unsigned char*)ciphertext, &outl, (unsigned char*)plaintext, plaintext_len))==0)
+	if(first_encr) {	/* Create and initialise the context */
+		encr_context = EVP_CIPHER_CTX_new();
+		EVP_EncryptInit(encr_context, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
+		first_encr = false;
+	}
+	if((ciphertext_len = EVP_EncryptUpdate(encr_context, (unsigned char*)ciphertext, &outl, (unsigned char*)plaintext, plaintext_len))==0)
 	{
 		cerr<<"Errore di EVP_EncryptUpdate."<<endl;
 		return 0;
 	}
-
-	EVP_CIPHER_CTX_free(ctx);
 
 	return ciphertext_len;
 }
@@ -119,6 +118,15 @@ void send_ack(int sock, bool ack)
 		cerr<<"Errore di send(ack). Codice:"<<errno<<endl;
 		exit(1);
 	}
+}
+
+bool check_command_injection(string buf)
+{
+	regex b("[A-Za-z0-9.-_]+");
+	if(regex_match(buf, b))
+		return true;
+	else 
+		return false;
 }
 
 char* create_rand_val(int val_length)
@@ -170,6 +178,21 @@ bool create_ca_store()
 	return true;
 }
 
+bool authorized_client(string name)
+{
+	string path = "../certif/authorized_clients.bin";
+	
+	fstream ff;
+	ff.open(path, ios::in | ios::binary);
+	
+	string line;
+	while(ff >> line)
+		if(line == name) return true;
+	
+	ff.close();
+	return false;
+}
+
 bool recv_authentication(int sd)
 {        
 	nonce_a = new char[NONCE_LENGTH];
@@ -199,7 +222,16 @@ bool recv_authentication(int sd)
 	
 	X509_NAME *subject_name = X509_get_subject_name(cert);
 	string sname = X509_NAME_oneline(subject_name, NULL, 0);
-
+	sname = sname.substr(9, sname.npos);
+	cout<<"Ricevuto certificato del client: "<<sname<<endl;
+	
+	//verificare che sia fra gli autorizzati
+	if(!authorized_client(sname))
+	{
+		cerr<<"ERRORE: Il client '"<<sname<<"' non è autorizzato presso questo Server!"<<endl;
+		return false;
+	}
+	
 	X509_STORE_CTX *ctx = X509_STORE_CTX_new();
 	X509_STORE_CTX_init(ctx, store, cert, NULL);
 	
@@ -316,6 +348,10 @@ void quit(int i)
 	code = 0, seqno=0;
 	secure_connection=false;
 	key_handshake = true;
+	first_encr = true;
+	first_decr = true;
+	EVP_CIPHER_CTX_free(encr_context);
+	EVP_CIPHER_CTX_free(decr_context);
 }
 
 int check_seqno(uint32_t seqno_r) //-1 in caso di errore, 0 se corrisponde
@@ -325,6 +361,11 @@ int check_seqno(uint32_t seqno_r) //-1 in caso di errore, 0 se corrisponde
 	{
 		cerr<<"Numeri di sequenza fuori fase!"<<endl;
 		return -1;
+	}
+	if(seqno_r == UINT32_MAX)
+	{
+		cout<<"Sessione scaduta!"<<endl;
+		exit(0);
 	}
 	else return 0;
 }
@@ -574,7 +615,7 @@ void send_data(string buf, int buf_len, int sock)
 	}
 	else
 		strcpy(ctx_buf, buf.c_str());
-		
+	
 	if(send(sock, (void*)ctx_buf, buf_len, 0) == -1)
 	{
 		cerr<<"Errore di send(buf). Codice: "<<errno<<endl;
@@ -617,10 +658,9 @@ void recvData(int sd)
 		delete[] ptx_buf;
 	}
 	else //siamo ancora in fase di handshake chiavi pertanto non devo decifrare normalmente
-	{	
 		net_buf = tmp_buf;
-		net_buf.resize(len);
-	}
+	
+	net_buf.resize(len);
 	seqno++;
 	delete[] tmp_buf;
 }
@@ -681,14 +721,14 @@ void create_secure_session(int i)
 {
 	//generare Ks, Ka, IV e nonce_b
 	key_encr = create_rand_val(SESSION_KEY_LEN);
-	BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
-	cout<<endl;
+	//BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
+	//cout<<endl;
 	key_auth = create_rand_val(SESSION_KEY_LEN);
-	BIO_dump_fp(stdout, (const char*)key_auth.c_str(), SESSION_KEY_LEN);
-	cout<<endl;
+	//BIO_dump_fp(stdout, (const char*)key_auth.c_str(), SESSION_KEY_LEN);
+	//cout<<endl;
 	init_v = create_rand_val(IV_LENGTH);	
 	nonce_b = create_rand_val(NONCE_LENGTH);
-
+/*
 	//1) prendere kpub del client dal certificato
  	EVP_PKEY *evp_cli_pubk = X509_get_pubkey(cert);
  	int cli_pubk_len = i2d_PublicKey(evp_cli_pubk, NULL);
@@ -739,9 +779,9 @@ void create_secure_session(int i)
 	
 	send_data(eks, SESSION_KEY_LEN, i);
 	send_data(ivs, IV_LENGTH, i);
-	send_data(outs, cipher_len, i);
-	//send_data(key_encr, SESSION_KEY_LEN, i);
-	//send_data(key_auth, SESSION_KEY_LEN, i);
+	send_data(outs, cipher_len, i);*/
+	send_data(key_encr, SESSION_KEY_LEN, i);
+	send_data(key_auth, SESSION_KEY_LEN, i);
 	
 	//4)iv e nonce_a vanno cifrati con kpriv serv
 	send_data(init_v, IV_LENGTH, i);
@@ -825,7 +865,8 @@ while(1){
 				        cout<<"SERVER: accettata nuova connessione con il client da "<<inet_ntoa(cl_addr.sin_addr)<<" sul socket "<<new_sd<<". "<<endl;
 				        busy = true;
 				        
-				        
+				        tv.tv_sec = 2000; //20sec timeout
+				        setsockopt(new_sd, SOL_SOCKET, SO_RCVTIMEO,(struct timeval *)&tv, sizeof(struct timeval));
 				        
 				    }
     			}
@@ -874,7 +915,11 @@ while(1){
 							
 							recvData(new_sd); //ricevo nome file
 							
-							cout<<"Ricevuto il nome_file: "<<net_buf.c_str()<<endl;
+							if(!check_command_injection(net_buf)) {
+								cout<<"ERRORE: Il nome file presenta caratteri non consentiti!"<<endl;	
+								break;					
+							}
+							cout<<"Ricevuto il nome_file: "<<net_buf<<endl;
 							
 							bool found = search_file(net_buf.c_str());
 							

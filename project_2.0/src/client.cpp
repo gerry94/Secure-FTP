@@ -1,7 +1,18 @@
+//LIBRERIE C-SOCKET
 #include <arpa/inet.h> 
 #include <netinet/in.h> 
 #include <sys/socket.h> 
 #include <sys/types.h>
+//LIBRERIE OPENSSL
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
+#include <openssl/rand.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/conf.h>
+#include <openssl/err.h>
+//LIBRERIE VARIE
 #include <unistd.h> 
 #include <iostream>
 #include <string>
@@ -10,20 +21,13 @@
 #include <fstream>
 #include <errno.h>
 #include <dirent.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
-#include <openssl/x509_vfy.h>
-#include <openssl/rand.h>
 #include <stdlib.h>
 #include <time.h>
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
-#include <openssl/conf.h>
-#include <openssl/err.h>
+
 
 using namespace std;
 
-# define CHUNK 512000
+# define CHUNK 512000 //512 KiB
 # define IP_ADDR "127.0.0.1"
 # define PORT_NO 15050
 # define NONCE_LENGTH 4 //byte
@@ -53,6 +57,7 @@ bool recv_authentication();
 bool create_nonce();
 
 //=====variabili socket ==========
+struct timeval tv;
 int porta, ret, sd;
 struct sockaddr_in srv_addr;
 bool udp_sock_created = false;
@@ -70,8 +75,13 @@ long long int lmsg;
 fstream fp; //puntatore al file da aprire
 
 //==========variabili cybersecurity===========
-uint32_t seqno; //numero di sequenza pacchetti
-uint32_t seqno_r; //num seq ricevuto
+
+EVP_CIPHER_CTX *decr_context;
+EVP_CIPHER_CTX *encr_context; //context usato nelle encrypt/decrypt
+bool first_encr = true, first_decr = true; //var che indica se è la prima volta che uso encr/decr in modo da fare una volta sola la Init()
+
+uint32_t seqno = 0; //numero di sequenza pacchetti
+uint32_t seqno_r = 0; //num seq ricevuto
 string cert_name = "../certif/gerardo_cert.pem";
 X509_STORE *store;
 char *nonce_client;
@@ -79,52 +89,42 @@ string key_auth, key_encr, init_v;
 bool key_handshake = true; //indica se siamo in fase di scambio di chiavi in modo da non usare la cifratura con chiavi che sarebbero non ancora inizializzate 
 //============================================
 
-int encrypt(char *plaintext, int plaintext_len, char *ciphertext)
-{
-	EVP_CIPHER_CTX *ctx;
-
-	int outl, ciphertext_len;
-
-	// Create and initialise the context 
-	ctx = EVP_CIPHER_CTX_new();
-
-	// Encrypt init
-	EVP_EncryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
-	
-	if((ciphertext_len = EVP_EncryptUpdate(ctx, (unsigned char*)ciphertext, &outl, (unsigned char*)plaintext, plaintext_len))==0)
-	{
-		cerr<<"Errore di EVP_EncryptUpdate."<<endl;
-		return 0;
-	}
-	ciphertext_len = outl;
-
-	EVP_CIPHER_CTX_free(ctx);
-
-	return ciphertext_len;
-}
-
 int decrypt(char *ciphertext, int ciphertext_len, char *plaintext)
 {
-	EVP_CIPHER_CTX *ctx;
-
 	int outl, plaintext_len;
 
-	// Create and initialise the context 
-	ctx = EVP_CIPHER_CTX_new();
-
-	// Decrypt Init
-	EVP_DecryptInit(ctx, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
-
-	if((plaintext_len = EVP_DecryptUpdate(ctx, (unsigned char*)plaintext, &outl, (unsigned char*)ciphertext, ciphertext_len))==0)
+	if(first_decr) { // Create and initialise the context 
+		decr_context = EVP_CIPHER_CTX_new();
+		EVP_DecryptInit(decr_context, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
+		first_decr = false;
+	}
+	
+	if((plaintext_len = EVP_DecryptUpdate(decr_context, (unsigned char*)plaintext, &outl, (unsigned char*)ciphertext, ciphertext_len))==0)
 	{
 		cerr<<"Errore di EVP_DecryptUpdate."<<endl;
 		return 0;
 	}
 	plaintext_len = outl;
-	// Clean the context!
-	EVP_CIPHER_CTX_free(ctx);
 
 	return plaintext_len;
+}
+
+int encrypt(char *plaintext, int plaintext_len, char *ciphertext)
+{
+	int outl, ciphertext_len;
+	
+	if(first_encr) {	/* Create and initialise the context */
+		encr_context = EVP_CIPHER_CTX_new();
+		EVP_EncryptInit(encr_context, EVP_aes_128_cfb8(), (const unsigned char*)key_encr.c_str(), (const unsigned char*)init_v.data());
+		first_encr = false;
+	}
+	if((ciphertext_len = EVP_EncryptUpdate(encr_context, (unsigned char*)ciphertext, &outl, (unsigned char*)plaintext, plaintext_len))==0)
+	{
+		cerr<<"Errore di EVP_EncryptUpdate."<<endl;
+		return 0;
+	}
+
+	return ciphertext_len;
 }
 
 bool create_ca_store()
@@ -151,7 +151,7 @@ bool create_ca_store()
 	X509_STORE_add_crl(store, crl);
 	X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK);
 	
-	cout<<"Creato deposito dei Certificati."<<endl;
+	if(dbgmode) cout<<"Creato deposito dei Certificati."<<endl;
 	//utilizzo store ...
 	return true;
 }
@@ -179,7 +179,8 @@ bool recv_authentication()
 	
 	X509_NAME *subject_name = X509_get_subject_name(cert);
 	string sname = X509_NAME_oneline(subject_name, NULL, 0);
-
+	
+	sname = sname.substr(9, sname.npos);
 	X509_STORE_CTX *ctx = X509_STORE_CTX_new();
 	X509_STORE_CTX_init(ctx, store, cert, NULL);
 	
@@ -202,7 +203,7 @@ bool recv_authentication()
 		send_ack(false);
 		return false;
 	}
-	cout<<"Certificato del server valido."<<endl;
+	cout<<"Certificato del server "<<sname<<" valido."<<endl;
 	send_ack(true);
 	X509_STORE_CTX_free(ctx);
 	return true;
@@ -221,7 +222,10 @@ int main()
 	fdmax = sd;
 
     	create_udp_socket();
-
+	
+	tv.tv_sec = 2000; //20sec timeout
+        setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO,(struct timeval *)&tv, sizeof(struct timeval));
+        
 	if(!create_ca_store())
 	{
 		cerr<<"Impossibile creare deposito certificati."<<endl;
@@ -239,7 +243,7 @@ int main()
 		cerr<<"Certificato server non valido."<<endl;
 		exit(1);
 	}
-	
+/*	
 	//ricevo encrypted key
 	recvData(sd);
 	string ekey = net_buf;
@@ -258,14 +262,14 @@ int main()
 	
 	EVP_PKEY *evp_cli_privk = PEM_read_PrivateKey(ffp, NULL, NULL, NULL);
 	fclose(ffp);
-	
+*/	
 	/*int cli_privk_len = i2d_PrivateKey(evp_cli_privk, NULL);
  	unsigned char *cli_privk = new unsigned char[cli_privk_len];
 
  	i2d_PrivateKey(evp_cli_privk, &cli_privk);
  	BIO_dump_fp(stdout, (const char*)cli_privk, cli_privk_len);
  	*/
- 	unsigned char *u_iv = new unsigned char[tmp_iv.size()];
+ 	/*unsigned char *u_iv = new unsigned char[tmp_iv.size()];
  	memcpy(u_iv, tmp_iv.data(), tmp_iv.size());
  	
  	unsigned char *ek = new unsigned char[ekey.size()];
@@ -297,7 +301,13 @@ int main()
 	
 	key_auth.copy((char*)plaintext, 16, 16);
 	BIO_dump_fp(stdout, (const char*)key_auth.c_str(), SESSION_KEY_LEN);
-	cout<<endl;
+	cout<<endl;*/
+	
+	recvData(sd);
+	key_encr = net_buf;
+	
+	recvData(sd);
+	key_auth = net_buf;
 
 	recvData(sd);
 	init_v = net_buf;
@@ -311,7 +321,7 @@ int main()
 	string app(nonce_client); //mi appoggio ad una stringa altrimenti non funziona l'operatore di confronto
 	app.resize(NONCE_LENGTH);
 	
-	if(nonce_a == app) cout<<"nonce_a verificato."<<endl;
+	if((nonce_a == app) && dbgmode) cout<<"nonce_a verificato."<<endl;
 	else cout<<"ERRORE di verifica nonce_a."<<endl; //gestire questa cosa
 	
 	if(send(sd, (void*)nonce_b.c_str(), NONCE_LENGTH, 0) ==-1)
@@ -466,7 +476,7 @@ while(1)
 						send_status(stato);
 						recvData(sd);
 						cout<<"======= FILE DISPONIBILI ========"<<endl;
-						cout<<net_buf.c_str();
+						cout<<net_buf;
 						cout<<endl<<"================================="<<endl;
 						//cout<<"Comando non ancora implementato..."<<endl;
 						break;
@@ -515,6 +525,11 @@ int check_seqno(uint32_t sr)
 	{
 		cerr<<"Numeri di sequenza fuori fase!"<<endl;
 		return -1;
+	}
+	if(sr == UINT32_MAX)
+	{
+		cout<<"Sessione scaduta! Aprire una nuova connessione."<<endl;
+		exit(0);
 	}
 	else return 0;
 }
@@ -760,6 +775,7 @@ void recvData(int sd)
 		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 		exit(1);
 	}
+	seqno++;
 	if(!key_handshake) //se la cifratura è abilitata
 	{
 		char *ptx_buf = new char[len];
@@ -768,13 +784,10 @@ void recvData(int sd)
 		delete[] ptx_buf;
 	}
 	else //siamo ancora in fase di handshake chiavi pertanto non devo decifrare normalmente
-	{	
 		net_buf = tmp_buf;
-		net_buf.resize(len);
-	}
-	seqno++;
-	delete[] tmp_buf;
-	
+		
+	net_buf.resize(len);
+	delete[] tmp_buf;	
 }
 
 void send_data(string buf, int buf_len)
@@ -881,7 +894,7 @@ void sock_connect(const char* address, int porta_server)
         	cerr<<"Errore in fase di connessione: "<<endl;
         	exit(-1);
     	}
-    	else
+    	else if(dbgmode)
     	{
     		cout<<"Connessione al server "<<address<<" sulla porta "<<porta_server<<" effettuata con successo."<<endl;
     		cout<<"Ricezione messaggi istantanei su porta "<<porta<<"."<<endl<<endl;
@@ -893,6 +906,8 @@ void quit(int i)
 	FD_CLR(i, &master);
 	close(sd);
 	cout<<"Client disconnesso."<<endl;
+	EVP_CIPHER_CTX_free(encr_context);
+	EVP_CIPHER_CTX_free(decr_context);
 	exit(0);
 }
 
