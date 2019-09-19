@@ -105,7 +105,7 @@ string compute_hmac(const string message)
 	//const EVP_MD* md = EVP_sha256();
 	if(dbgmode) {
 		cout<<"Messaggio in chiaro + seq.No: "<<endl;
-		BIO_dump_fp(stdout, (const char*)message.c_str(), message.length());
+		BIO_dump_fp(stdout, (const char*)message.c_str(), message.size());
 	}
 	//HASH_SIZE = EVP_MD_size(md);
 	unsigned int hash_len;
@@ -114,12 +114,14 @@ string compute_hmac(const string message)
 		
 	//create message digest context
 	HMAC_CTX* mdctx = HMAC_CTX_new();
+	if(!mdctx) cout<<"hmac() out of memory"<<endl;
 	
 	//Init,Update,Finalise digest
-	HMAC_Init_ex(mdctx, (unsigned char*)key_auth.c_str(), AUTH_KEY_LEN, EVP_sha256(), NULL);
-	HMAC_Update(mdctx, (unsigned char*)message.c_str(), message.size());
-	HMAC_Final(mdctx, hash_buf, (unsigned int*) &hash_len);
+	bool result = HMAC_Init_ex(mdctx, (unsigned char*)key_auth.c_str(), AUTH_KEY_LEN, EVP_sha256(), NULL)
+	&& HMAC_Update(mdctx, (unsigned char*)message.c_str(), message.size())
+	&& HMAC_Final(mdctx, hash_buf, (unsigned int*) &hash_len);
 	
+	if(!result) cout<<"errore nella compute_hmac!!"<<endl;
 	string outs;
 	outs.assign((char*)hash_buf, hash_len);
 
@@ -692,7 +694,9 @@ void recv_file(string filename, int new_sd)
 		
 		if((ret = decrypt(ctx_buf, CHUNK, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 		
-		if(!recv_hmac(ptx_buf, new_sd)) //ricevo l'hmac di questo pacchetto
+		string app_buf;
+		app_buf.assign(ptx_buf, CHUNK);
+		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
 		{
 			fp.close();
 			remove(filename.c_str()); //elimino il file
@@ -739,20 +743,21 @@ void recv_file(string filename, int new_sd)
 		seqno++;
 		if((ret = decrypt(ctx_buf, mancanti, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 		
-		if(!recv_hmac(ptx_buf, new_sd)) //ricevo l'hmac di questo pacchetto
-		{
-			fp.close();
-			remove(filename.c_str()); //elimino il file
-			return;
-		}
 		ricevuti += n;
-		fp.write(ptx_buf, mancanti);
-		
 		progress = (ricevuti*100)/fsize;
 		cout<<"\r"<<progress<<"%";
-
 		count++;
 		
+		fp.write(ptx_buf, mancanti);
+		string app_buf;
+		app_buf.assign(ptx_buf, mancanti);
+		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
+		{
+			if(dbgmode) cout<<"DIGEST_CHECK fallito nella parte mancante!"<<endl;
+			fp.close();
+			remove(filename.c_str()); //elimino il file
+		}
+
 		delete[] ptx_buf;
 		delete[] ctx_buf;
 	}
@@ -822,7 +827,10 @@ void send_file()
 		}
 		count++; seqno++;
 		
-		send_hmac(ptx_buf, sd);
+		//if(dbgmode) { cout<<"ptx_buf nella send_file() passato per calcolo HMAC: "<<endl; BIO_dump_fp(stdout, (const char*)ptx_buf, mancanti); }
+		string app_buf;
+		app_buf.assign(ptx_buf, CHUNK);
+		send_hmac(app_buf, sd);
 		
 		mancanti -= n;
 		inviati += n;
@@ -853,7 +861,10 @@ void send_file()
 		}
 		count++; seqno++;
 		
-		send_hmac(ptx_buf, sd);
+		//if(dbgmode) { cout<<"ptx_buf nella send_file() passato per calcolo HMAC: "<<endl; BIO_dump_fp(stdout, (const char*)ptx_buf, mancanti); }
+		string app_buf;
+		app_buf.assign(ptx_buf, mancanti);
+		send_hmac(app_buf, sd);
 		
 		inviati += n;
 		progress = (inviati*100)/fsize;
@@ -1138,6 +1149,8 @@ void send_hmac(string buf, int sock)
 	if(dbgmode) cout<<"send_hmac()..."<<endl;
 	send_seqno(sock);
 	
+	//if(dbgmode) { cout<<"Plaintext da firmare: "<<endl; BIO_dump_fp(stdout, (const char*)buf.c_str(), buf.length()); }
+	
 	//calcolo hmac di {messaggio,seqno}, seqno-1 perchè è relativo al MESSAGGIO che era la send precedente a questa
 	string buf_hmac = compute_hmac(buf.append(to_string(seqno-1))); 
 	
@@ -1177,7 +1190,7 @@ bool recv_hmac(string plaintext, int sock)
 	net_buf.assign(c_buf_hmac, HASH_SIZE);
 	net_buf.resize(HASH_SIZE);
 	delete[] c_buf_hmac;
-					
+	
 	plaintext.append(to_string(expected_seqno)); //seqno-1 perchè è relativo al seqno del messaggio che era la recv preced..
 
 	if(!verify_hmac(plaintext, net_buf))

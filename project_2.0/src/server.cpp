@@ -95,12 +95,14 @@ string compute_hmac(const string message)
 		
 	//create message digest context
 	HMAC_CTX* mdctx = HMAC_CTX_new();
+	if(!mdctx) cout<<"hmac() out of memory"<<endl;
 	
 	//Init,Update,Finalise digest
-	HMAC_Init_ex(mdctx, (unsigned char*)key_auth.c_str(), AUTH_KEY_LEN, EVP_sha256(), NULL);
-	HMAC_Update(mdctx, (unsigned char*)message.c_str(), message.size());
-	HMAC_Final(mdctx, hash_buf, (unsigned int*) &hash_len);
+	bool result = HMAC_Init_ex(mdctx, (unsigned char*)key_auth.c_str(), AUTH_KEY_LEN, EVP_sha256(), NULL)
+	&& HMAC_Update(mdctx, (unsigned char*)message.c_str(), message.size())
+	&& HMAC_Final(mdctx, hash_buf, (unsigned int*) &hash_len);
 	
+	if(!result) cout<<"errore nella compute_hmac!!"<<endl;
 	string outs;
 	outs.assign((char*)hash_buf, hash_len);
 
@@ -150,7 +152,12 @@ int decrypt(char *ciphertext, int ciphertext_len, char *plaintext)
 		return 0;
 	}
 	plaintext_len = outl;
-
+	
+	/*if(dbgmode)
+	{
+		cout<<"Messaggio decifrato: "<<endl;
+		BIO_dump_fp(stdout, (const char*)plaintext, plaintext_len);
+	}*/
 	return plaintext_len;
 }
 
@@ -496,7 +503,9 @@ void send_file(string filename, int sd)
 		}
 		count++; seqno++;
 		
-		send_hmac(ptx_buf, sd);
+		string app_buf;
+		app_buf.assign(ptx_buf, CHUNK);
+		send_hmac(app_buf, sd);
 		
 		mancanti -= n;
 		inviati += n;
@@ -526,7 +535,11 @@ void send_file(string filename, int sd)
 			exit(1);
 		}
 		count++; seqno++;
-		send_hmac(ptx_buf, sd);
+		
+		string app_buf;
+		app_buf.assign(ptx_buf, mancanti);
+		send_hmac(app_buf, sd);
+		
 		inviati += n;
 		progress = (inviati*100)/fsize;
 		cout<<"\r"<<progress<<"%";
@@ -595,7 +608,9 @@ void recv_file(string filename)
 		
 		if((ret = decrypt(ctx_buf, CHUNK, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 		
-		if(!recv_hmac(ptx_buf, new_sd)) //ricevo l'hmac di questo pacchetto
+		string app_buf;
+		app_buf.assign(ptx_buf, CHUNK);
+		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
 		{
 			fp.close();
 			remove(filename.c_str()); //elimino il file
@@ -639,13 +654,6 @@ void recv_file(string filename)
 		}
 		seqno++;
 		if((ret = decrypt(ctx_buf, mancanti, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
-		
-		if(!recv_hmac(ptx_buf, new_sd)) //ricevo l'hmac di questo pacchetto
-		{
-			fp.close();
-			remove(filename.c_str()); //elimino il file
-			return;
-		}
 		ricevuti += n;
 		
 		fp.write(ptx_buf, mancanti);
@@ -654,6 +662,16 @@ void recv_file(string filename)
 		cout<<"\r"<<progress<<"%";
 
 		count++;
+		
+		string app_buf;
+		app_buf.assign(ptx_buf, mancanti);
+		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
+		{
+			cout<<"DIGEST_CHECK fallito nella parte mancante!"<<endl;
+			fp.close();
+			remove(filename.c_str()); //elimino il file
+			return;
+		}
 		
 		delete[] ptx_buf;
 		delete[] ctx_buf;
@@ -718,14 +736,14 @@ void send_hmac(string buf, int sock) //buf è il messagio in chiaro
 	if(dbgmode) cout<<"send_hmac()..."<<endl;
 	send_seqno(sock);
 	
+	if(dbgmode)
+		BIO_dump_fp(stdout, (const char*)buf.c_str(), buf.size());
 	//calcolo hmac di {messaggio,seqno}, seqno-1 perchè è relativo al MESSAGGIO che era la send precedente a questa
 	string buf_hmac = compute_hmac(buf.append(to_string(seqno-1))); 
 	
 	char *c_buf_hmac = new char[HASH_SIZE];
 	strcpy(c_buf_hmac, buf_hmac.c_str());
 	
-	if(dbgmode)
-		BIO_dump_fp(stdout, (const char*)c_buf_hmac, HASH_SIZE);
 	if(send(sock, (void*)c_buf_hmac, HASH_SIZE, 0) == -1)
 	{
 		cerr<<"Errore di send_hmac(). Codice: "<<errno<<endl;
@@ -753,7 +771,8 @@ bool recv_hmac(string plaintext, int sock) //riceve e verifica l'hmac
 	hmac_msg.assign(c_buf_hmac, HASH_SIZE);
 	hmac_msg.resize(HASH_SIZE);
 	delete[] c_buf_hmac;
-			
+	
+	if(dbgmode) { cout<<"Plaintext da firmare per verifica: "<<endl; BIO_dump_fp(stdout, (const char*)plaintext.c_str(), plaintext.size()); }
 	plaintext.append(to_string(expected_seqno)); //seqno-1 perchè è relativo al seqno del messaggio che era la recv preced..
 
 	if(!verify_hmac(plaintext, hmac_msg))
@@ -809,7 +828,7 @@ void recvData(int sd)
 void recv_status(int sd)
 {
 	recvData(sd); //il comando può essere ricevuto solo dopo che la connessioe è sicura quindi viene sempre cifrato
-	code = stoi(net_buf);
+	code = stoi(net_buf, NULL, 10);
 	
 	if(dbgmode) cout<<"Ricevuto comando "<<code<<" dal client."<<endl;
 }
@@ -863,65 +882,12 @@ void create_secure_session(int i)
 {
 	//generare Ks, Ka, IV e nonce_b
 	key_encr = create_rand_val(SESSION_KEY_LEN);
-	//BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
-	//cout<<endl;
+
 	key_auth = create_rand_val(AUTH_KEY_LEN);
-	//BIO_dump_fp(stdout, (const char*)key_auth.c_str(), SESSION_KEY_LEN);
-	//cout<<endl;
+
 	init_v = create_rand_val(IV_LENGTH);	
 	nonce_b = create_rand_val(NONCE_LENGTH);
-/*
-	//1) prendere kpub del client dal certificato
- 	EVP_PKEY *evp_cli_pubk = X509_get_pubkey(cert);
- 	int cli_pubk_len = i2d_PublicKey(evp_cli_pubk, NULL);
- 	
- 	unsigned char *cli_pubk = new unsigned char[cli_pubk_len];
- 	
- 	i2d_PublicKey(evp_cli_pubk, &cli_pubk);
-	
-	//2) prendere kpriv del server dal file pem
-	FILE *fp = fopen("../certif/Server_key.pem", "rb");
-	if(!fp) { cerr<<"errore apertura serv_key.pem."<<endl; exit(1); }
-	
-	EVP_PKEY *evp_serv_privk = PEM_read_PrivateKey(fp, NULL, NULL, NULL);
-	fclose(fp);
-	int serv_privk_len = i2d_PrivateKey(evp_serv_privk, NULL);
- 	unsigned char *serv_privk = new unsigned char[serv_privk_len];
 
- 	i2d_PrivateKey(evp_serv_privk, &serv_privk);
- 	//BIO_dump_fp(stdout, (const char*)serv_privk, serv_privk_len);
- 	
- 	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
- 	if(!ctx) { cerr<<"Errore creazione del context."<<endl; }
- 	
- 	unsigned char iv[SESSION_KEY_LEN];
- 	unsigned char *rand_key = new unsigned char[SESSION_KEY_LEN];
- 	unsigned char *out = new unsigned char[48]; //2 chiavi = 16*2 + altri 16 byte
- 	
- 	int klen = 0;
- 	
- 	if(EVP_SealInit(ctx, EVP_aes_128_cfb8(), &rand_key, &klen, iv, &evp_cli_pubk, 1) != 1) { cerr<<"errore seal."<<endl; exit(1); }
-
- 	int outl, cipher_len;
- 	string conc_key = key_encr;
- 	conc_key.append(key_auth);
-	if(EVP_SealUpdate(ctx, out, &outl, (unsigned char*)conc_key.data(), conc_key.size()) != 1) { cerr<<"errore SealUpdate."<<endl; exit(1); }
- 	cipher_len = outl;
- 	
- 	if(EVP_SealFinal(ctx, out+cipher_len, &outl) != 1) { cerr<<"errore SealFinal."<<endl; exit(1); }
- 	cipher_len += outl;
-
- 	EVP_CIPHER_CTX_free(ctx);
-
-	//3) cifrare con kpub client e kpriv serv (ripetere per k_enr e k_auth)
-	string outs, ivs, eks;
-	outs.assign((char*)out, cipher_len);
-	ivs.assign((char*)iv, IV_LENGTH);
-	eks.assign((char*)rand_key, SESSION_KEY_LEN);
-	
-	send_data(eks, SESSION_KEY_LEN, i);
-	send_data(ivs, IV_LENGTH, i);
-	send_data(outs, cipher_len, i);*/
 	send_data(key_encr, SESSION_KEY_LEN, i);
 	send_data(key_auth, AUTH_KEY_LEN, i);
 	
