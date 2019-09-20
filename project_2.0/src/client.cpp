@@ -83,6 +83,7 @@ bool first_encr = true, first_decr = true; //var che indica se è la prima volta
 uint32_t seqno = 0; //numero di sequenza pacchetti
 uint32_t seqno_r = 0; //num seq ricevuto
 string cert_name = "../certif/gerardo_cert.pem";
+X509 *server_cert;
 X509_STORE *store;
 char *nonce_client;
 string key_auth, key_encr, init_v;
@@ -158,32 +159,40 @@ bool create_ca_store()
 
 bool recv_authentication()
 {
-	// Attendo dimensione del mesaggio                
-	if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
+	// Attendo dimensione del messaggio                
+	/*if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
 		return false;
 	}
 	
-	len = ntohs(lmsg); // Rinconverto in formato host
+	len = ntohl(lmsg); // Rinconverto in formato host
 	
 	char *buf = new char[len];
 	if(recv(sd, (void*)buf, len, 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 		return false;
-	}
-
-	X509 *cert = d2i_X509(NULL, (const unsigned char**)&buf, len);
-	if(!cert) return false;
+	}*/
 	
-	X509_NAME *subject_name = X509_get_subject_name(cert);
-	string sname = X509_NAME_oneline(subject_name, NULL, 0);
+	recvData(sd);
+	string buf = net_buf;
+
+	server_cert = d2i_X509(NULL, (const unsigned char**)&buf, buf.size());
+	if(!server_cert) return false;
+	
+	X509_NAME *subject_name = X509_get_subject_name(server_cert);
+	
+	char* oneline = X509_NAME_oneline(subject_name, NULL, 0);
+	string sname = string(oneline);
+	
+	free(oneline);
+	OPENSSL_free(&buf);
 	
 	sname = sname.substr(9, sname.npos);
 	X509_STORE_CTX *ctx = X509_STORE_CTX_new();
-	X509_STORE_CTX_init(ctx, store, cert, NULL);
-	
+	X509_STORE_CTX_init(ctx, store, server_cert, NULL);
+
 	//verifica del certificato
 	if(X509_verify_cert(ctx) != 1) 
 	{
@@ -206,8 +215,85 @@ bool recv_authentication()
 	cout<<"Certificato del server "<<sname<<" valido."<<endl;
 	send_ack(true);
 	X509_STORE_CTX_free(ctx);
+	
 	return true;
 	
+}
+//firma digitale
+string sign(string toSign)
+{
+	//prendere kpriv del server dal file pem
+	FILE *fp = fopen("../certif/gerardo_key.pem", "r");
+	if(!fp) { cerr<<"errore apertura client_key.pem."<<endl; exit(1); }
+	
+	EVP_PKEY *evp_cli_privk = PEM_read_PrivateKey(fp, NULL, NULL, NULL);
+	if(!evp_cli_privk) {cout<<"Chiave non prelevata"<<endl; exit(1);}
+	fclose(fp);
+
+	unsigned char* body_sign = new unsigned char[toSign.size()];
+	memcpy(body_sign, toSign.data(), toSign.size());
+	
+	unsigned char* tmp_sign = new unsigned char[EVP_PKEY_size(evp_cli_privk)];
+	unsigned int sign_len = 0;
+
+	EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+	if(!ctx) {cout<<"Creazione ctx non riuscita"<<endl; exit(1);}
+
+	if(EVP_SignInit(ctx, EVP_sha256()) == 0) { cerr<<"SignInit Error"<<endl; exit(1);}
+	if(EVP_SignUpdate(ctx, body_sign, toSign.size()) == 0) { cerr<<"SignInit Error"<<endl; exit(1);}
+	if(EVP_SignFinal(ctx, tmp_sign, &sign_len, evp_cli_privk) == 0) { cerr<<"SignFianl Error"<<endl; exit(1);}
+
+	EVP_MD_CTX_free(ctx);
+	EVP_PKEY_free(evp_cli_privk);
+
+	string signature;
+	signature.assign((char*)tmp_sign, sign_len);
+	
+	delete[] tmp_sign;
+	delete[] body_sign;
+	
+	return signature;	
+}
+
+
+bool verifySign(string received_sign, string msg)
+{
+	unsigned char* tmp_sign = new unsigned char[received_sign.size()];
+	memcpy(tmp_sign, received_sign.data(), received_sign.size());
+	unsigned int sign_len = received_sign.size();
+
+	unsigned char* to_verify = new unsigned char[msg.size()];
+	memcpy(to_verify, msg.data(), msg.size());
+	unsigned int msg_len = msg.size();
+
+	EVP_PKEY *evp_server_pubk = X509_get_pubkey(server_cert);
+	if(!evp_server_pubk)
+	{
+		cout<<"Chiave pubblica server erroneamente prelevata"<<endl;
+		exit(1);
+	}
+	
+	EVP_MD_CTX* signctx = EVP_MD_CTX_new();
+	if(!signctx) {cout<<"Errore ctx"<<endl; exit(1);}
+
+	if(EVP_VerifyInit(signctx, EVP_sha256()) == 0) {cerr<<"VerifyInit Error"<<endl; return false;}
+	if(EVP_VerifyUpdate(signctx, msg.data(), msg.size()) == 0) {cerr<<"VerifyUpdate Error"<<endl; return false;}
+	if(EVP_VerifyFinal(signctx, (const unsigned char*)received_sign.data(), received_sign.size(), evp_server_pubk) == 0) 
+	{	
+		cerr<<"ERRORE: verifica digital_signature fallita. Codice: "<<endl;
+		cout<<ERR_GET_REASON(ERR_get_error())<<endl;
+		return false;
+	}
+
+	delete[] to_verify;
+	delete[] tmp_sign;
+
+	EVP_PKEY_free(evp_server_pubk);
+	EVP_MD_CTX_free(signctx);
+
+	cout<<"Firma digitale verificata."<<endl;
+	return true;
+
 }
 
 int main()
@@ -243,11 +329,12 @@ int main()
 		cerr<<"Certificato server non valido."<<endl;
 		exit(1);
 	}
-/*	
+	
+
 	//ricevo encrypted key
 	recvData(sd);
 	string ekey = net_buf;
-	
+
 	//ricevo iv temporaneo
 	recvData(sd);
 	string tmp_iv = net_buf;
@@ -255,60 +342,8 @@ int main()
 	//ricevo le chiavi concatenate e cifrate
 	recvData(sd);
 	string conc_key = net_buf;
+	int conc_len = conc_key.size();
 	
-	//2) prendere kpriv del client dal file pem
-	FILE *ffp = fopen("../certif/gerardo_key.pem", "r");
-	if(!ffp) { cerr<<"errore apertura client_key.pem."<<endl; exit(1); }
-	
-	EVP_PKEY *evp_cli_privk = PEM_read_PrivateKey(ffp, NULL, NULL, NULL);
-	fclose(ffp);
-*/	
-	/*int cli_privk_len = i2d_PrivateKey(evp_cli_privk, NULL);
- 	unsigned char *cli_privk = new unsigned char[cli_privk_len];
-
- 	i2d_PrivateKey(evp_cli_privk, &cli_privk);
- 	BIO_dump_fp(stdout, (const char*)cli_privk, cli_privk_len);
- 	*/
- 	/*unsigned char *u_iv = new unsigned char[tmp_iv.size()];
- 	memcpy(u_iv, tmp_iv.data(), tmp_iv.size());
- 	
- 	unsigned char *ek = new unsigned char[ekey.size()];
- 	memcpy(ek, ekey.data(), ekey.size());
- 	
-	unsigned char *plaintext = new unsigned char[len];
-	int outlen = 0, plainlen = 0;
-	
-	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-	//EVP_CIPHER_CTX_set_padding(ctx, 0);
-	if(EVP_OpenInit(ctx, EVP_aes_128_cfb8(), ek, ekey.size(), u_iv, evp_cli_privk)==0) {
-		cerr<<"errore openInit()."<<endl;
-		ERR_print_errors_fp(stdout);
-		}
-	
-	if(EVP_OpenUpdate(ctx, plaintext, &outlen, (unsigned char*)conc_key.data(), len) == 0)
-		cerr<<"Errore OpenUdpate()"<<endl;
-	plainlen = outlen;
-	
-	if(EVP_OpenFinal(ctx, plaintext+plainlen, &outlen) == 0)
-		cerr<<"Errore OpenFinal()"<<endl;
-	plainlen+=outlen;
-	
-	EVP_CIPHER_CTX_free(ctx);
-	
-	key_encr.copy((char*)plaintext, 16, 0);
-	BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
-	cout<<endl;
-	
-	key_auth.copy((char*)plaintext, 16, 16);
-	BIO_dump_fp(stdout, (const char*)key_auth.c_str(), SESSION_KEY_LEN);
-	cout<<endl;*/
-	
-	recvData(sd);
-	key_encr = net_buf;
-	
-	recvData(sd);
-	key_auth = net_buf;
-
 	recvData(sd);
 	init_v = net_buf;
 
@@ -316,21 +351,108 @@ int main()
 	string nonce_a = net_buf;
 
 	recvData(sd);
+	string signature = net_buf;
+
+	recvData(sd);
 	string nonce_b = net_buf;
 
-	string app(nonce_client); //mi appoggio ad una stringa altrimenti non funziona l'operatore di confronto
+	string toVerify = conc_key;
+	toVerify.append(init_v);
+	toVerify.append(nonce_a);
+	
+	if(!verifySign(signature, toVerify))
+	{
+		cerr<<"Comunicazione non sicura"<<endl;
+		exit(1);
+	}
+
+	//verifica nonce_a uguale a quello inviato all'inizio
+	string app(nonce_client, NONCE_LENGTH); //mi appoggio ad una stringa altrimenti non funziona l'operatore di confronto
 	app.resize(NONCE_LENGTH);
 	
-	if((nonce_a == app) && dbgmode) cout<<"nonce_a verificato."<<endl;
+	if(nonce_a == app) cout<<"nonce_a verificato."<<endl;
 	else cout<<"ERRORE di verifica nonce_a."<<endl; //gestire questa cosa
-	
-	if(send(sd, (void*)nonce_b.c_str(), NONCE_LENGTH, 0) ==-1)
+
+	//prendere kpriv del client dal file pem per poi decifrare le chiavi di sessione
+	FILE *ffp = fopen("../certif/gerardo_key.pem", "r");
+	if(!ffp) { cerr<<"errore apertura client_key.pem."<<endl; exit(1); }
+
+	EVP_PKEY *evp_cli_privk = PEM_read_PrivateKey(ffp, NULL, NULL, NULL);
+	if(!evp_cli_privk)
 	{
-		cerr<<"Errore in fase di send nonce_b. Codice: "<<errno<<endl;
+		cout<<"Errore nella lettura della chiave privata"<<endl;
+		exit(1);
+	}
+	int pvk = EVP_PKEY_size(evp_cli_privk);
+	fclose(ffp);
+
+ 	unsigned char *u_iv = new unsigned char[tmp_iv.size()];
+ 	memcpy(u_iv, tmp_iv.data(), tmp_iv.size());
+ 	
+ 	unsigned char *ek = new unsigned char[ekey.size()];
+ 	memcpy(ek, ekey.data(), ekey.size());
+
+	unsigned char *ciphertext = new unsigned char[conc_len];
+	memcpy(ciphertext, conc_key.data(), conc_len);
+
+	unsigned char *plaintext = new unsigned char[conc_len];
+	memset(plaintext, 0, conc_len);
+
+	int outlen = 0; 
+	int plainlen = 0;
+	
+	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+	if(!ctx)
+	{
+		cerr<<"Errore di creazione EVP_CIPHER_CTX."<<endl;
 		exit(1);
 	}
 	
+	if(EVP_OpenInit(ctx, EVP_aes_128_cfb8(), ek, ekey.size(), u_iv, evp_cli_privk)==0) {
+		cerr<<"errore openInit()."<<endl;
+		ERR_print_errors_fp(stdout);
+		exit(1);
+		}
+
+
+	if(EVP_OpenUpdate(ctx, plaintext, &outlen, ciphertext, conc_len) == 0)
+	{
+		cerr<<"Errore OpenUdpate()"<<endl;
+		exit(1);
+	}
+	plainlen = outlen;
+	
+	if(EVP_OpenFinal(ctx, plaintext+plainlen, &outlen) == 0)
+	{
+		cerr<<"Errore OpenFinal()"<<endl;
+		exit(1);
+	}
+	plainlen+=outlen;
+
+	string decrypted_keys;
+	decrypted_keys.assign((char*)plaintext, plainlen);
+	
+	EVP_PKEY_free(evp_cli_privk);
+	EVP_CIPHER_CTX_free(ctx);
+	
+	key_encr = decrypted_keys.substr(0, 16);
+	key_auth = decrypted_keys.substr(16, 16);
+	
+	//firma sul nonce_b con chiave privata client
+	//inviare firma e nonce_b
+
+	string nonce_b_signed = sign(nonce_b);
+	
+	send_data(nonce_b, nonce_b.size());
+	send_data(nonce_b_signed, nonce_b_signed.size());
+
 	key_handshake = false;
+	
+	delete[] u_iv;
+	delete[] plaintext;
+	delete[] ciphertext;
+	delete[] ek;
+	
 	cout<<"SYSTEM: Fine hadshake chiavi/certificati. Stabilita connessione sicura."<<endl;
 	
 	cout<<"======================================="<<endl;
@@ -494,7 +616,6 @@ while(1)
     		}
     	}
 }
-
 	return 0;
 }
 
@@ -648,6 +769,9 @@ void recv_file(string filename, int new_sd)
 		cout<<"\r"<<progress<<"%";
 
 		count++;
+		
+		delete[] ptx_buf;
+		delete[] ctx_buf;
 	}
 	cout<<endl;
 	cout<<"Ricevuto file in "<<count<<" pacchetti, per un totale di "<<ricevuti<<" bytes."<<endl;
@@ -746,6 +870,9 @@ void send_file()
 		inviati += n;
 		progress = (inviati*100)/fsize;
 		cout<<"\r"<<progress<<"%";	
+		
+		delete[] ptx_buf;
+		delete[] ctx_buf;
 	}
 	cout<<endl;
 	cout<<"Inviato file in "<<count<<" pacchetti."<<endl;
@@ -776,15 +903,18 @@ void recvData(int sd)
 		exit(1);
 	}
 	seqno++;
+	//cout<<"Buffer ricevuto: "<<endl;
+	//BIO_dump_fp(stdout, (const char*)tmp_buf, len);
+	
 	if(!key_handshake) //se la cifratura è abilitata
 	{
 		char *ptx_buf = new char[len];
 		if(decrypt(tmp_buf, len, ptx_buf)==0) { cerr<<"Errore di decrypt() nella recvData()"<<endl; exit(1); }
-		net_buf = ptx_buf;
+		net_buf.assign(ptx_buf, len);
 		delete[] ptx_buf;
 	}
 	else //siamo ancora in fase di handshake chiavi pertanto non devo decifrare normalmente
-		net_buf = tmp_buf;
+		net_buf.assign(tmp_buf, len);
 		
 	net_buf.resize(len);
 	delete[] tmp_buf;	
@@ -805,21 +935,26 @@ void send_data(string buf, int buf_len)
 	seqno++;
 	
 	send_seqno(sd);
-	char *ptx_buf = new char[buf_len]; //+1 ?
-	strcpy(ptx_buf, buf.c_str());
 	
 	char *ctx_buf = new char[buf_len];
-	if(encrypt(ptx_buf, buf_len, ctx_buf) == 0) { cerr<<"Errore di encrypt() nella send_data()."<<endl; exit(1); }
-	
+
+	if(!key_handshake)
+	{
+		char *ptx_buf = new char[buf_len]; //+1 ?
+		memcpy(ptx_buf, buf.data(), buf_len);
+		if(encrypt(ptx_buf, buf_len, ctx_buf) == 0) { cerr<<"Errore di encrypt() nella send_data()."<<endl; exit(1); }
+		delete[] ptx_buf;
+	}
+	else
+		memcpy(ctx_buf, buf.data(), buf_len);
         if(send(sd, (void*)ctx_buf, buf_len, 0) == -1)
         {
         	cerr<<"Errore di send(buf). Codice: "<<errno<<endl;;
         	exit(1);
         }
-        seqno++;        
-        stato = -1;
-        delete[] ptx_buf;
-        delete[] ctx_buf;
+        seqno++;  
+	delete[] ctx_buf;      
+        stato = -1;       
 }
 
 void send_status(int stato)
@@ -944,17 +1079,11 @@ bool create_nonce()
 
 	nonce_client = new char[NONCE_LENGTH];
 
-	if(RAND_bytes((unsigned char*)nonce_client, NONCE_LENGTH) != 1){
+	if(RAND_bytes((unsigned char*)nonce_client, NONCE_LENGTH) != 1)
+	{
 		cerr<<"Errore esecuzione RAND_bytes"<<endl;
 		return false;
 	}
-
-	/*lmsg = htons(NONCE_LENGTH);
-	if(send(sd, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
-	{
-		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
-		return false;
-	}*/
 	
 	//nonce_length è già nota al server
 	if(send(sd, (void*)nonce_client, NONCE_LENGTH, 0)== -1)
@@ -972,27 +1101,32 @@ bool send_authentication()
 	if(!create_nonce())
 		return false;
 	
-	X509 *cert;
-	FILE *fpem = fopen(cert_name.c_str(), "rb");
-	
+	X509 *client_cert;
+	FILE *fpem = fopen(cert_name.c_str(), "r");
 	if(!fpem)
 	{
 		cout<<"File certificato non trovato."<<endl;
 		return false;
 	}
 	
-	cert = PEM_read_X509(fpem, NULL,NULL,NULL);
-	if(!cert)
+	client_cert = PEM_read_X509(fpem, NULL,NULL,NULL);
+	if(!client_cert)
 	{
 		cout<<"Errore lettura certificato."<<endl;
 		return false;
 	}
 
+	fclose(fpem);
+
 	unsigned char *buf = NULL;
-	unsigned long int fsize = i2d_X509(cert, &buf);
+	unsigned long int fsize = i2d_X509(client_cert, &buf);
 	if(fsize <= 0) return false;
 	
-	lmsg = htons(fsize);
+	string s_buf;
+	s_buf.assign((char*)buf, fsize);
+	send_data(s_buf, fsize);
+	
+	/*lmsg = htonl(fsize);
 	if(send(sd, (void*) &lmsg, sizeof(uint64_t), 0) == -1)
 	{
 		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
@@ -1003,8 +1137,9 @@ bool send_authentication()
 	{
 		cerr<<"Errore di send(file.pem). Codice: "<<errno<<endl;
 		return false;
-	}
+	}*/
 	OPENSSL_free(buf);
+	X509_free(client_cert);
 	
 	cout<<"Certificato inviato al server."<<endl;
 	if(!recv_ack())
@@ -1013,7 +1148,6 @@ bool send_authentication()
 		exit(1);
 	}
 	
-	fclose(fpem);
 	return true;	
 }
 

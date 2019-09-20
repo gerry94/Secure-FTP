@@ -27,11 +27,11 @@
 
 using namespace std;
 
-# define CHUNK 512000
-# define IP_ADDR "127.0.0.1"
-# define PORT_NO 15050
-# define NONCE_LENGTH 4 //byte
-# define IV_LENGTH 16 //initialization value (controllare la dimensione (byte)
+# define CHUNK 		512000
+# define IP_ADDR 	"127.0.0.1"
+# define PORT_NO 	15050
+# define NONCE_LENGTH 	  4 //byte
+# define IV_LENGTH 	 16 //initialization value (controllare la dimensione (byte)
 # define SESSION_KEY_LEN 16 //controllare dim
 
 // alcuni prototipi
@@ -67,9 +67,9 @@ uint32_t seqno_r; //num sequenza ricevuto
 bool secure_connection = false;
 string cert_server = "../certif/Server_cert.pem";
 X509_STORE *store;
-X509 *cert;
-string key_encr,init_v, key_auth;
-char *nonce_a, *nonce_b; //nonce_a= ricevuto dal client
+X509 *client_cert;
+string key_encr,init_v, key_auth, nonce_b;
+char *nonce_a; //nonce_a= ricevuto dal client
 bool key_handshake = true; //indica se siamo in fase di scambio di chiavi in modo da non usare la cifratura con chiavi che sarebbero non ancora inizializzate 
 //============================================
 
@@ -129,24 +129,26 @@ bool check_command_injection(string buf)
 		return false;
 }
 
-char* create_rand_val(int val_length)
+bool create_rand_val(string &dest, int val_length)
 {
 	if(val_length <= 0)
-		return NULL;
+		return false;
 		
 	if(RAND_poll() != 1){
 		cerr<<"Errore esecuzione RAND_poll()"<<endl;
-		return NULL;
+		return false;
 	}	
 	
 	char *val = new char[val_length];
 	
 	if(RAND_bytes((unsigned char*)val, val_length) != 1){
 		cerr<<"Errore esecuzione RAND_bytes"<<endl;
-		return NULL;
+		return false;
 	}	
+	dest.assign(val, val_length);
 	
-	return val;
+	delete[] val;
+	return true;
 }
 
 bool create_ca_store()
@@ -174,7 +176,9 @@ bool create_ca_store()
 	X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK);
 	
 	cout<<"Creato deposito dei Certificati."<<endl;
-	//utilizzo store ...
+	
+	X509_free(ca_cert);
+	X509_CRL_free(crl);
 	return true;
 }
 
@@ -184,6 +188,11 @@ bool authorized_client(string name)
 	
 	fstream ff;
 	ff.open(path, ios::in | ios::binary);
+	if(!ff)
+	{
+		cerr<<"errore apertura file client autorizzati!"<<endl;
+		return false;
+	}
 	
 	string line;
 	while(ff >> line)
@@ -202,26 +211,35 @@ bool recv_authentication(int sd)
 		return false;
 	}
 
-	if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
+	recvData(sd);
+	string buf = net_buf;
+	
+	/*if(recv(sd, (void*)&lmsg, sizeof(uint64_t), 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
 		return false;
 	}
 	
-	len = ntohs(lmsg); // Rinconverto in formato host
-	
-	char *buf = new char[len];
+	len = ntohl(lmsg); // Rinconverto in formato host
+
+	unsigned char *buf = new unsigned char[len];
 	if(recv(sd, (void*)buf, len, 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione buffer dati. Codice: "<<errno<<endl;
 		return false;
 	}
-
-	cert = d2i_X509(NULL, (const unsigned char**)&buf, len);
-	if(!cert) return false;
+	*/
 	
-	X509_NAME *subject_name = X509_get_subject_name(cert);
-	string sname = X509_NAME_oneline(subject_name, NULL, 0);
+	client_cert = d2i_X509(NULL, (const unsigned char**)&buf, buf.size());
+	if(!client_cert) return false;
+	
+	X509_NAME *subject_name = X509_get_subject_name(client_cert);
+	char* oneline = X509_NAME_oneline(subject_name, NULL, 0);
+	string sname = string(oneline);
+	
+	free(oneline);
+	OPENSSL_free(&buf);
+	
 	sname = sname.substr(9, sname.npos);
 	cout<<"Ricevuto certificato del client: "<<sname<<endl;
 	
@@ -233,7 +251,7 @@ bool recv_authentication(int sd)
 	}
 	
 	X509_STORE_CTX *ctx = X509_STORE_CTX_new();
-	X509_STORE_CTX_init(ctx, store, cert, NULL);
+	X509_STORE_CTX_init(ctx, store, client_cert, NULL);
 	
 	//verifica del certificato
 	if(X509_verify_cert(ctx) != 1) 
@@ -257,6 +275,7 @@ bool recv_authentication(int sd)
 	cout<<"Certificato client sul socket "<<sd<<" valido."<<endl;
 	send_ack(sd, true);
 	X509_STORE_CTX_free(ctx);
+
 	return true;
 	
 }
@@ -274,8 +293,8 @@ bool recv_ack(int sd)
 
 bool send_authentication(int sd)
 {
-	X509 *cert;
-	FILE *fpem = fopen(cert_server.c_str(), "rb");
+	X509 *s_cert;
+	FILE *fpem = fopen(cert_server.c_str(), "r");
 	
 	if(!fpem)
 	{
@@ -283,17 +302,22 @@ bool send_authentication(int sd)
 		return false;
 	}
 	
-	cert = PEM_read_X509(fpem, NULL,NULL,NULL);
-	if(!cert)
+	s_cert = PEM_read_X509(fpem, NULL,NULL,NULL);
+	if(!s_cert)
 	{
 		cout<<"Errore lettura certificato."<<endl;
 		return false;
 	}
 
 	unsigned char *buf = NULL;
-	unsigned long int fsize = i2d_X509(cert, &buf);
+	unsigned long int fsize = i2d_X509(s_cert, &buf);
 	if(fsize <= 0) return false;
 	
+	string s_buf;
+	s_buf.assign((char*)buf, fsize);
+	send_data(s_buf, fsize, sd);
+	
+	/*
 	lmsg = htons(fsize);
 	if(send(sd, (void*) &lmsg, sizeof(uint64_t), 0) == -1)
 	{
@@ -305,8 +329,9 @@ bool send_authentication(int sd)
 	{
 		cerr<<"Errore di send(file.pem). Codice: "<<errno<<endl;
 		return false;
-	}
+	}*/
 	OPENSSL_free(buf);
+	X509_free(s_cert);
 	
 	cout<<"Certificato inviato al client."<<endl;
 	if(!recv_ack(sd))
@@ -464,7 +489,10 @@ void send_file(int sd)
 		count++; seqno++;
 		inviati += n;
 		progress = (inviati*100)/fsize;
-		cout<<"\r"<<progress<<"%";	
+		cout<<"\r"<<progress<<"%";
+		
+		delete[] ptx_buf;
+		delete[] ctx_buf;	
 	}
 	cout<<endl;
 	cout<<"Inviato file in "<<count<<" pacchetti."<<endl;
@@ -571,6 +599,9 @@ void recv_file(string filename)
 		cout<<"\r"<<progress<<"%";
 
 		count++;
+		
+		delete[] ptx_buf;
+		delete[] ctx_buf;
 	}
 	cout<<endl;
 	cout<<"Ricevuto file in "<<count<<" pacchetti, per un totale di "<<ricevuti<<" bytes."<<endl;
@@ -608,13 +639,13 @@ void send_data(string buf, int buf_len, int sock)
 	if(!key_handshake)
 	{
         	char *ptx_buf = new char[buf_len]; //+1 ?
-		strcpy(ptx_buf, buf.c_str());
+		memcpy(ptx_buf, buf.data(), buf_len);
 		
 		if(encrypt(ptx_buf, buf_len, ctx_buf) == 0) { cerr<<"Errore di encrypt() nella send_data()."<<endl; exit(1); }
 		delete[] ptx_buf;
 	}
 	else
-		strcpy(ctx_buf, buf.c_str());
+		memcpy(ctx_buf, buf.data(), buf_len);
 	
 	if(send(sock, (void*)ctx_buf, buf_len, 0) == -1)
 	{
@@ -654,11 +685,11 @@ void recvData(int sd)
 	{
 		char *ptx_buf = new char[len];
 		if(decrypt(tmp_buf, len, ptx_buf)==0) { cerr<<"Errore di decrypt() nella recvData()"<<endl; exit(1); }
-		net_buf = ptx_buf;
+		net_buf.assign(ptx_buf, len);
 		delete[] ptx_buf;
 	}
 	else //siamo ancora in fase di handshake chiavi pertanto non devo decifrare normalmente
-		net_buf = tmp_buf;
+		net_buf.assign(tmp_buf, len);
 	
 	net_buf.resize(len);
 	seqno++;
@@ -668,7 +699,7 @@ void recvData(int sd)
 void recv_status(int sd)
 {
 	recvData(sd); //il comando può essere ricevuto solo dopo che la connessioe è sicura quindi viene sempre cifrato
-	code = stoi(net_buf);
+	code = stoi(net_buf, NULL, 10);
 	
 	if(dbgmode) cout<<"Ricevuto comando "<<code<<" dal client."<<endl;
 }
@@ -710,102 +741,192 @@ void list(int sock)
 	}
 	
 	cout<<"Invio lista file disponibili in corso..."<<endl;
-	
-	//char *ctx_buf = new char[lista_file.length()];
-	//if(encrypt(lista_file, lista_file.length(), ctx_buf)) == 0) { cerr<<"Errore di encrypt(lista_file)."<<endl; exit(1); }
+
 	send_data(lista_file, lista_file.length(), sock);
 	cout<<"Lista inviata."<<endl;
 }
 
-void create_secure_session(int i)
+//firma digitale
+string sign(string toSign)
 {
-	//generare Ks, Ka, IV e nonce_b
-	key_encr = create_rand_val(SESSION_KEY_LEN);
-	//BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
-	//cout<<endl;
-	key_auth = create_rand_val(SESSION_KEY_LEN);
-	//BIO_dump_fp(stdout, (const char*)key_auth.c_str(), SESSION_KEY_LEN);
-	//cout<<endl;
-	init_v = create_rand_val(IV_LENGTH);	
-	nonce_b = create_rand_val(NONCE_LENGTH);
-/*
-	//1) prendere kpub del client dal certificato
- 	EVP_PKEY *evp_cli_pubk = X509_get_pubkey(cert);
- 	int cli_pubk_len = i2d_PublicKey(evp_cli_pubk, NULL);
- 	
- 	unsigned char *cli_pubk = new unsigned char[cli_pubk_len];
- 	
- 	i2d_PublicKey(evp_cli_pubk, &cli_pubk);
-	
-	//2) prendere kpriv del server dal file pem
-	FILE *fp = fopen("../certif/Server_key.pem", "rb");
+	//prendere kpriv del server dal file pem
+	FILE *fp = fopen("../certif/Server_key.pem", "r");
 	if(!fp) { cerr<<"errore apertura serv_key.pem."<<endl; exit(1); }
 	
 	EVP_PKEY *evp_serv_privk = PEM_read_PrivateKey(fp, NULL, NULL, NULL);
+	if(!evp_serv_privk) {cout<<"Chiave non prelevata"<<endl; exit(1);}
 	fclose(fp);
-	int serv_privk_len = i2d_PrivateKey(evp_serv_privk, NULL);
- 	unsigned char *serv_privk = new unsigned char[serv_privk_len];
 
- 	i2d_PrivateKey(evp_serv_privk, &serv_privk);
- 	//BIO_dump_fp(stdout, (const char*)serv_privk, serv_privk_len);
+	unsigned char* body_sign = new unsigned char[toSign.size()];
+	memcpy(body_sign, toSign.data(), toSign.size());
+	
+	unsigned char* tmp_sign = new unsigned char[EVP_PKEY_size(evp_serv_privk)];
+	unsigned int sign_len = 0;
+
+	EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+	if(!ctx) {cout<<"Creazione ctx non riuscita"<<endl; exit(1);}
+
+	if(EVP_SignInit(ctx, EVP_sha256()) == 0) { cerr<<"SignInit Error"<<endl; exit(1);}
+	if(EVP_SignUpdate(ctx, body_sign, toSign.size()) == 0) { cerr<<"SignInit Error"<<endl; exit(1);}
+	if(EVP_SignFinal(ctx, tmp_sign, &sign_len, evp_serv_privk) == 0) { cerr<<"SignFianl Error"<<endl; exit(1);}
+
+	EVP_MD_CTX_free(ctx);
+	EVP_PKEY_free(evp_serv_privk);
+
+	string signature;
+	signature.assign((char*)tmp_sign, sign_len);
+	
+	delete[] tmp_sign;
+	delete[] body_sign;
+	
+	return signature;	
+}
+
+bool verifySign(string received_sign, string msg)
+{
+	unsigned char* tmp_sign = new unsigned char[received_sign.size()];
+	memcpy(tmp_sign, received_sign.data(), received_sign.size());
+	unsigned int sign_len = received_sign.size();
+
+	unsigned char* to_verify = new unsigned char[msg.size()];
+	memcpy(to_verify, msg.data(), msg.size());
+	unsigned int msg_len = msg.size();
+
+	EVP_PKEY *evp_cli_pubk = X509_get_pubkey(client_cert);
+	if(!evp_cli_pubk)
+	{
+		cout<<"Chiave pubblica server erroneamente prelevata"<<endl;
+		exit(1);
+	}
+	
+	EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+	if(!ctx) {cout<<"Errore ctx"<<endl; exit(1);}
+
+	if(EVP_VerifyInit(ctx, EVP_sha256()) == 0) {cerr<<"VerifyInit Error"<<endl; return false;}
+	if(EVP_VerifyUpdate(ctx, msg.data(), msg.size()) == 0) {cerr<<"VerifyUpdate Error"<<endl; return false;}
+	if(EVP_VerifyFinal(ctx, (const unsigned char*)received_sign.data(), received_sign.size(), evp_cli_pubk) == 0) 
+	{	
+		cerr<<"ERRORE: verifica digital_signature fallita. Codice: "<<endl;
+		cout<<ERR_GET_REASON(ERR_get_error())<<endl;
+		return false;
+	}
+
+	delete[] to_verify;
+	delete[] tmp_sign;
+
+	EVP_PKEY_free(evp_cli_pubk);
+	EVP_MD_CTX_free(ctx);
+
+	cout<<"Firma digitale verificata."<<endl;
+	return true;
+
+}
+
+
+void create_secure_session(int i)
+{
+	//generare Ks, Ka, IV e nonce_b
+	create_rand_val(key_encr, SESSION_KEY_LEN);
+
+	create_rand_val(key_auth, SESSION_KEY_LEN);
+
+	create_rand_val(init_v, IV_LENGTH);
+	//init_v.resize(IV_LENGTH);
+	
+	//string tmp_nb;
+	//tmp_nb.assign(nonce_b, NONCE_LENGTH);
+	create_rand_val(nonce_b, NONCE_LENGTH);
+	
+	//memcpy(nonce_b, tmp_nb.data(), NONCE_LENGTH);
+	
+	string conc_key = key_encr;
+ 	conc_key.append(key_auth);
+ 	
+	unsigned char* plaintext = new unsigned char[conc_key.size()];
+	memcpy(plaintext, conc_key.data(), conc_key.size());
+
+	//1) prendere kpub del client dal certificato
+ 	EVP_PKEY *evp_cli_pubk = X509_get_pubkey(client_cert);
  	
  	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
  	if(!ctx) { cerr<<"Errore creazione del context."<<endl; }
  	
- 	unsigned char iv[SESSION_KEY_LEN];
- 	unsigned char *rand_key = new unsigned char[SESSION_KEY_LEN];
+	int iv_size = EVP_CIPHER_iv_length(EVP_aes_128_cfb8());
+ 	unsigned char iv[iv_size];
+
+	int pubk_size = EVP_PKEY_size(evp_cli_pubk);
+ 	unsigned char *ek = new unsigned char[pubk_size];
+
  	unsigned char *out = new unsigned char[48]; //2 chiavi = 16*2 + altri 16 byte
  	
  	int klen = 0;
+	int outl = 0;
+	int cipher_len = 0;
  	
- 	if(EVP_SealInit(ctx, EVP_aes_128_cfb8(), &rand_key, &klen, iv, &evp_cli_pubk, 1) != 1) { cerr<<"errore seal."<<endl; exit(1); }
+ 	if(EVP_SealInit(ctx, EVP_aes_128_cfb8(), &ek, &klen, iv, &evp_cli_pubk, 1) == 0) { cerr<<"errore seal."<<endl; exit(1); }
 
- 	int outl, cipher_len;
- 	string conc_key = key_encr;
- 	conc_key.append(key_auth);
-	if(EVP_SealUpdate(ctx, out, &outl, (unsigned char*)conc_key.data(), conc_key.size()) != 1) { cerr<<"errore SealUpdate."<<endl; exit(1); }
+	if(EVP_SealUpdate(ctx, out, &outl, plaintext, conc_key.size()) == 0) { cerr<<"errore SealUpdate."<<endl; exit(1); }
  	cipher_len = outl;
  	
- 	if(EVP_SealFinal(ctx, out+cipher_len, &outl) != 1) { cerr<<"errore SealFinal."<<endl; exit(1); }
+ 	if(EVP_SealFinal(ctx, out+cipher_len, &outl) == 0) { cerr<<"errore SealFinal."<<endl; exit(1); }
  	cipher_len += outl;
 
- 	EVP_CIPHER_CTX_free(ctx);
+	EVP_PKEY_free(evp_cli_pubk);
+	EVP_CIPHER_CTX_free(ctx);
 
-	//3) cifrare con kpub client e kpriv serv (ripetere per k_enr e k_auth)
+	//3) invio chiavi di sessione cifrate con chiave pubblica del client, iv, nonce_a
 	string outs, ivs, eks;
 	outs.assign((char*)out, cipher_len);
-	ivs.assign((char*)iv, IV_LENGTH);
-	eks.assign((char*)rand_key, SESSION_KEY_LEN);
-	
-	send_data(eks, SESSION_KEY_LEN, i);
-	send_data(ivs, IV_LENGTH, i);
-	send_data(outs, cipher_len, i);*/
-	send_data(key_encr, SESSION_KEY_LEN, i);
-	send_data(key_auth, SESSION_KEY_LEN, i);
-	
-	//4)iv e nonce_a vanno cifrati con kpriv serv
+	ivs.assign((char*)iv, iv_size);
+	eks.assign((char*)ek, klen);
+
+	send_data(eks, klen, i);
+	send_data(ivs, iv_size, i);
+	send_data(outs, cipher_len, i);
+
 	send_data(init_v, IV_LENGTH, i);
-	send_data(nonce_a, NONCE_LENGTH, i);
+	
+	string s_nonce_a;
+	s_nonce_a.assign(nonce_a, NONCE_LENGTH);
+	send_data(s_nonce_a, NONCE_LENGTH, i);
+
+	delete[] ek;
+	delete[] out;
+	delete[] plaintext;
+	
+	//4)invio firma dal server su chiavi cifrate, iv e nonce_a
+	string forSign = outs;
+ 	forSign.append(init_v);
+	forSign.append(s_nonce_a);
+
+	string signature = sign(forSign);
+
+	send_data(signature, signature.size(), i);
+
 	send_data(nonce_b, NONCE_LENGTH, i);
 
-	char *tmp_buf = new char[NONCE_LENGTH];
-	if(recv(i, (void*)tmp_buf, NONCE_LENGTH, 0) == -1)
+	//ricevo firma e nonce_b
+
+	recvData(i);
+	string nonce_b_cli = net_buf;
+
+	recvData(i);
+	string signed_nonce = net_buf;
+
+
+	if(!verifySign(signed_nonce, nonce_b_cli))
 	{
-		cerr<<"Errore in fase di ricezione nonce_b. Codice: "<<errno<<endl;
+		cout<<"Nonce_b non verificato"<<endl;
 		exit(1);
 	}
-	net_buf = tmp_buf;
-	net_buf.resize(NONCE_LENGTH);
-	delete[] tmp_buf;
 
-	//5) net_buf contiente nonce_b cifrato con kpriv client e lo dobbiamo decifrare con kpub client
 	
 	//mi appoggio ad una stringa altrimenti non funziona l'operatore di confront
 	string app(nonce_b); 
 
 	app.resize(NONCE_LENGTH);
 
-	if(net_buf == app) cout<<"nonce_b verificato."<<endl;
+	if(nonce_b_cli == app) cout<<"nonce_b verificato."<<endl;
 	else cout<<"ERRORE verifica nonce_b."<<endl;
 	
 	key_handshake = false;
