@@ -52,7 +52,7 @@ fd_set master, read_fds;
 int fdmax;
 bool busy = false; //serve per accettare una sola connessione
 //================================
-bool dbgmode = 0; //serve oer attivare dei messaggi di debug nelle funzioni
+bool dbgmode = 1; //serve oer attivare dei messaggi di debug nelle funzioni
 string net_buf;
 
 string filename;
@@ -83,12 +83,12 @@ int HASH_SIZE = EVP_MD_size(EVP_sha256());
 string compute_hmac(const string message)
 {
 	//declaring the hash function we want to use (md = message digest)
-	//const EVP_MD* md = EVP_sha256();
-	if(dbgmode) {
-		cout<<"Messaggio in chiaro + seq.No: "<<endl;
+
+	/*if(dbgmode) {
+		cout<<"Messaggio cifrato + seq.No: "<<endl;
 		BIO_dump_fp(stdout, (const char*)message.c_str(), message.length());
-	}
-	//HASH_SIZE = EVP_MD_size(md);
+	}*/
+
 	unsigned int hash_len;
 	//create a buf for our digest
 	unsigned char *hash_buf = new unsigned char[HASH_SIZE];
@@ -103,9 +103,11 @@ string compute_hmac(const string message)
 	&& HMAC_Final(mdctx, hash_buf, (unsigned int*) &hash_len);
 	
 	if(!result) cout<<"errore nella compute_hmac!!"<<endl;
+	
 	string outs;
 	outs.assign((char*)hash_buf, hash_len);
-
+	//BIO_dump_fp(stdout, (const char*)message.c_str(), message.length());
+	
 	//Delete context
 	HMAC_CTX_free(mdctx);
 	delete[] hash_buf;
@@ -113,10 +115,10 @@ string compute_hmac(const string message)
 	return outs;
 }
 
-bool verify_hmac(const string plaintext, const string hmac_recv)
+bool verify_hmac(const string ciphertext, const string hmac_recv)
 {
-	//1) calcolo hmac del plaintext ricevuto
-	string hmac_calc = compute_hmac(plaintext);
+	//1) calcolo hmac del ciphertext ricevuto
+	string hmac_calc = compute_hmac(ciphertext);
 
 	//2) confronto hmac calcolato con hmac ricevuto
 	if(CRYPTO_memcmp((unsigned char*)hmac_calc.c_str(), (unsigned char*)hmac_recv.c_str(), HASH_SIZE) != 0)
@@ -442,17 +444,21 @@ int check_seqno(uint32_t seqno_r) //-1 in caso di errore, 0 se corrisponde
 void send_seqno(int sd)
 {
 	if(dbgmode) cout<<"Invio seqno "<<seqno<<" in corso..."<<endl;
+	
+	int ret;
 	//invio seqno
-	if(send(sd, (void*)&seqno, sizeof(uint32_t), 0)== -1)
+	if((ret=send(sd, &seqno, sizeof(uint32_t), 0))== -1)
 	{
 		cerr<<"Errore di send(seqno). Codice: "<<errno<<endl;
 		exit(1);
 	}
+	cout<<"ret: "<<ret<<endl;
 }
 
 void recv_seqno(int sd)
 {
 	if(dbgmode) cout<<"Attendo seqno..."<<endl;
+	
 	//ricevo numero di sequenza dal client
 	if(recv(sd, &seqno_r, sizeof(uint32_t), 0) == -1)
 	{
@@ -504,7 +510,7 @@ void send_file(string filename, int sd)
 		count++; seqno++;
 		
 		string app_buf;
-		app_buf.assign(ptx_buf, CHUNK);
+		app_buf.assign(ctx_buf, CHUNK);
 		send_hmac(app_buf, sd);
 		
 		mancanti -= n;
@@ -537,7 +543,7 @@ void send_file(string filename, int sd)
 		count++; seqno++;
 		
 		string app_buf;
-		app_buf.assign(ptx_buf, mancanti);
+		app_buf.assign(ctx_buf, mancanti);
 		send_hmac(app_buf, sd);
 		
 		inviati += n;
@@ -605,17 +611,17 @@ void recv_file(string filename)
 			exit(1);
 		}
 		seqno++;
-		
-		if((ret = decrypt(ctx_buf, CHUNK, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
-		
+
 		string app_buf;
-		app_buf.assign(ptx_buf, CHUNK);
+		app_buf.assign(ctx_buf, CHUNK);
 		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
 		{
 			fp.close();
 			remove(filename.c_str()); //elimino il file
 			return;
 		}
+		
+		if((ret = decrypt(ctx_buf, CHUNK, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 		
 		ricevuti += n;
 		mancanti -= n;
@@ -653,6 +659,17 @@ void recv_file(string filename)
 			exit(1);
 		}
 		seqno++;
+
+		string app_buf;
+		app_buf.assign(ctx_buf, mancanti);
+		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
+		{
+			cout<<"DIGEST_CHECK fallito nella parte mancante!"<<endl;
+			fp.close();
+			remove(filename.c_str()); //elimino il file
+			return;
+		}	
+
 		if((ret = decrypt(ctx_buf, mancanti, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 		ricevuti += n;
 		
@@ -662,16 +679,6 @@ void recv_file(string filename)
 		cout<<"\r"<<progress<<"%";
 
 		count++;
-		
-		string app_buf;
-		app_buf.assign(ptx_buf, mancanti);
-		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
-		{
-			cout<<"DIGEST_CHECK fallito nella parte mancante!"<<endl;
-			fp.close();
-			remove(filename.c_str()); //elimino il file
-			return;
-		}
 		
 		delete[] ptx_buf;
 		delete[] ctx_buf;
@@ -709,24 +716,31 @@ void send_data(string buf, int buf_len, int sock)
 	
 	char *ctx_buf = new char[buf_len];
 	
+	seqno++;
 	if(!key_handshake)
 	{
         	char *ptx_buf = new char[buf_len];
-		strcpy(ptx_buf, buf.c_str());
+		memcpy(ptx_buf, buf.data(), buf_len);
 		
 		if(encrypt(ptx_buf, buf_len, ctx_buf) == 0) { cerr<<"Errore di encrypt() nella send_data()."<<endl; exit(1); }
 		delete[] ptx_buf;
+
+		if(dbgmode) cout<<"Invio HMAC(lista)."<<endl;
+		string app_buf;
+		app_buf.assign(ctx_buf, buf_len);
+		send_hmac(app_buf, sock);
 	}
 	else
-		strcpy(ctx_buf, buf.c_str());
+		memcpy(ctx_buf, buf.data(), buf_len);
 	
+	if(dbgmode) cout<<"Ora invio la lista cifrata"<<endl;
 	if(send(sock, (void*)ctx_buf, buf_len, 0) == -1) //invio il messaggio
 	{
 		cerr<<"Errore di send(buf). Codice: "<<errno<<endl;
 		exit(1);
 	}
 	     
-        seqno++;
+        //seqno++;
         delete[] ctx_buf;
         code = 0;
 }
@@ -735,14 +749,14 @@ void send_hmac(string buf, int sock) //buf è il messagio in chiaro
 {
 	if(dbgmode) cout<<"send_hmac()..."<<endl;
 	send_seqno(sock);
-	
-	if(dbgmode)
-		BIO_dump_fp(stdout, (const char*)buf.c_str(), buf.size());
+
+	//if(dbgmode)
+	//	BIO_dump_fp(stdout, (const char*)buf.c_str(), buf.size());
 	//calcolo hmac di {messaggio,seqno}, seqno-1 perchè è relativo al MESSAGGIO che era la send precedente a questa
 	string buf_hmac = compute_hmac(buf.append(to_string(seqno-1))); 
 	
 	char *c_buf_hmac = new char[HASH_SIZE];
-	strcpy(c_buf_hmac, buf_hmac.c_str());
+	memcpy(c_buf_hmac, buf_hmac.data(), HASH_SIZE);
 	
 	if(send(sock, (void*)c_buf_hmac, HASH_SIZE, 0) == -1)
 	{
@@ -753,7 +767,7 @@ void send_hmac(string buf, int sock) //buf è il messagio in chiaro
 	delete[] c_buf_hmac;
 }
 
-bool recv_hmac(string plaintext, int sock) //riceve e verifica l'hmac
+bool recv_hmac(string ciphertext, int sock) //riceve e verifica l'hmac
 {
 	if(dbgmode) cout<<"recv_hmac()..."<<endl;
 	recv_seqno(sock);
@@ -772,10 +786,10 @@ bool recv_hmac(string plaintext, int sock) //riceve e verifica l'hmac
 	hmac_msg.resize(HASH_SIZE);
 	delete[] c_buf_hmac;
 	
-	if(dbgmode) { cout<<"Plaintext da firmare per verifica: "<<endl; BIO_dump_fp(stdout, (const char*)plaintext.c_str(), plaintext.size()); }
-	plaintext.append(to_string(expected_seqno)); //seqno-1 perchè è relativo al seqno del messaggio che era la recv preced..
+	if(dbgmode) { cout<<"Ciphertext da firmare per verifica: "<<endl; BIO_dump_fp(stdout, (const char*)ciphertext.c_str(), ciphertext.size()); }
+	ciphertext.append(to_string(expected_seqno)); //seqno-1 perchè è relativo al seqno del messaggio che era la recv preced..
 
-	if(!verify_hmac(plaintext, hmac_msg))
+	if(!verify_hmac(ciphertext, hmac_msg))
 	{
 		cerr<<"Digest Check fallito!"<<endl;
 		return false;
@@ -790,7 +804,7 @@ void recvData(int sd)
 	if(check_seqno(seqno_r) == -1) exit(1);
 	
 	// Attendo dimensione del mesaggio                
-	if(recv(sd, (void*)&lmsg, sizeof(uint16_t), 0) == -1)
+	if(recv(sd, (void*)&lmsg, sizeof(uint32_t), 0) == -1)
 	{
 		cerr<<"Errore in fase di ricezione lunghezza. Codice: "<<errno<<endl;
 		exit(1);
@@ -810,8 +824,15 @@ void recvData(int sd)
 		exit(1);
 	}
 
+	seqno++;
 	if(!key_handshake) //se la cifratura è abilitata
 	{
+		//seqno++;
+		string app_buf;
+		app_buf.assign(tmp_buf, len);
+		if(!recv_hmac(app_buf, new_sd))//recvData(new_sd); //ricevo hmac(nomefile)
+			exit(1);
+
 		char *ptx_buf = new char[len];
 		if(decrypt(tmp_buf, len, ptx_buf)==0) { cerr<<"Errore di decrypt() nella recvData()"<<endl; exit(1); }
 		net_buf.assign(ptx_buf, len);
@@ -821,7 +842,7 @@ void recvData(int sd)
 		net_buf.assign(tmp_buf, len);
 	
 	net_buf.resize(len);
-	seqno++;
+	//seqno++;
 	delete[] tmp_buf;
 }
 
@@ -870,11 +891,7 @@ void list(int sock)
 	
 	cout<<"Invio lista file disponibili in corso..."<<endl;
 	send_data(lista_file, lista_file.length(), sock);
-	
-	if(dbgmode) cout<<"Invio HMAC(lista)."<<endl;
-	send_hmac(lista_file, sock);
 
-	//BIO_dump_fp(stdout, (const char*)lista_hmac.c_str(), lista_hmac.length());
 	cout<<"Lista inviata."<<endl;
 }
 
@@ -1025,10 +1042,8 @@ while(1){
 							cout<<"In attesa di file..."<<endl;
 							
 							recvData(new_sd); //ricevo nome file
-							string fname = net_buf, tmp_fname = net_buf;
-							//cout<<"seqno HMAC deve essere: "<<seqno-1<<endl;
-							if(!recv_hmac(tmp_fname, new_sd))//recvData(new_sd); //ricevo hmac(nomefile)
-								break;
+							string fname = net_buf;
+						
 							//string hmac_recv = net_buf;
 							/*
 							tmp_fname.append(to_string(expected_seqno));
@@ -1070,10 +1085,8 @@ while(1){
 						case 2: //========download file============= comando !get
 						{	
 							recvData(new_sd); //ricevo il nome del file
-							string filename = net_buf, tmp_filename = net_buf;
-							
-							if(!recv_hmac(tmp_filename, new_sd)) //recvData(new_sd); //ricevo hmac(nomefile)
-								break;
+							string filename = net_buf;
+				
 							//string hmac_recv = net_buf;
 							/*tmp_filename.append(to_string(expected_seqno));
 							

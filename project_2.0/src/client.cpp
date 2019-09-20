@@ -75,7 +75,7 @@ int udp_socket;
 uint32_t udp_port;
 struct sockaddr_in address;
 //================================
-bool dbgmode = 0; //serve oer attivare dei messaggi di debug nelle funzioni
+bool dbgmode = 1; //serve oer attivare dei messaggi di debug nelle funzioni
 string net_buf;
 
 int stato, len;
@@ -102,12 +102,12 @@ int HASH_SIZE = EVP_MD_size(EVP_sha256());
 string compute_hmac(const string message)
 {
 	//declaring the hash function we want to use (md = message digest)
-	//const EVP_MD* md = EVP_sha256();
-	if(dbgmode) {
+
+	/*if(dbgmode) {
 		cout<<"Messaggio in chiaro + seq.No: "<<endl;
 		BIO_dump_fp(stdout, (const char*)message.c_str(), message.size());
-	}
-	//HASH_SIZE = EVP_MD_size(md);
+	}*/
+
 	unsigned int hash_len;
 	//create a buf for our digest
 	unsigned char *hash_buf = new unsigned char[HASH_SIZE];
@@ -132,10 +132,10 @@ string compute_hmac(const string message)
 	return outs;
 }
 
-bool verify_hmac(const string plaintext, const string hmac_recv)
+bool verify_hmac(const string ciphertext, const string hmac_recv)
 {
 	//1) calcolo hmac del plaintext ricevuto
-	string hmac_calc = compute_hmac(plaintext);
+	string hmac_calc = compute_hmac(ciphertext);
 
 	//2) confronto hmac calcolato con hmac ricevuto
 	if(CRYPTO_memcmp((unsigned char*)hmac_calc.c_str(), (unsigned char*)hmac_recv.c_str(), HASH_SIZE) != 0)
@@ -309,65 +309,6 @@ int main()
 		cerr<<"Certificato server non valido."<<endl;
 		exit(1);
 	}
-/*	
-	//ricevo encrypted key
-	recvData(sd);
-	string ekey = net_buf;
-	
-	//ricevo iv temporaneo
-	recvData(sd);
-	string tmp_iv = net_buf;
-
-	//ricevo le chiavi concatenate e cifrate
-	recvData(sd);
-	string conc_key = net_buf;
-	
-	//2) prendere kpriv del client dal file pem
-	FILE *ffp = fopen("../certif/gerardo_key.pem", "r");
-	if(!ffp) { cerr<<"errore apertura client_key.pem."<<endl; exit(1); }
-	
-	EVP_PKEY *evp_cli_privk = PEM_read_PrivateKey(ffp, NULL, NULL, NULL);
-	fclose(ffp);
-*/	
-	/*int cli_privk_len = i2d_PrivateKey(evp_cli_privk, NULL);
- 	unsigned char *cli_privk = new unsigned char[cli_privk_len];
-
- 	i2d_PrivateKey(evp_cli_privk, &cli_privk);
- 	BIO_dump_fp(stdout, (const char*)cli_privk, cli_privk_len);
- 	*/
- 	/*unsigned char *u_iv = new unsigned char[tmp_iv.size()];
- 	memcpy(u_iv, tmp_iv.data(), tmp_iv.size());
- 	
- 	unsigned char *ek = new unsigned char[ekey.size()];
- 	memcpy(ek, ekey.data(), ekey.size());
- 	
-	unsigned char *plaintext = new unsigned char[len];
-	int outlen = 0, plainlen = 0;
-	
-	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-	//EVP_CIPHER_CTX_set_padding(ctx, 0);
-	if(EVP_OpenInit(ctx, EVP_aes_128_cfb8(), ek, ekey.size(), u_iv, evp_cli_privk)==0) {
-		cerr<<"errore openInit()."<<endl;
-		ERR_print_errors_fp(stdout);
-		}
-	
-	if(EVP_OpenUpdate(ctx, plaintext, &outlen, (unsigned char*)conc_key.data(), len) == 0)
-		cerr<<"Errore OpenUdpate()"<<endl;
-	plainlen = outlen;
-	
-	if(EVP_OpenFinal(ctx, plaintext+plainlen, &outlen) == 0)
-		cerr<<"Errore OpenFinal()"<<endl;
-	plainlen+=outlen;
-	
-	EVP_CIPHER_CTX_free(ctx);
-	
-	key_encr.copy((char*)plaintext, 16, 0);
-	BIO_dump_fp(stdout, (const char*)key_encr.c_str(), SESSION_KEY_LEN);
-	cout<<endl;
-	
-	key_auth.copy((char*)plaintext, 16, 16);
-	BIO_dump_fp(stdout, (const char*)key_auth.c_str(), SESSION_KEY_LEN);
-	cout<<endl;*/
 	
 	recvData(sd);
 	key_encr = net_buf;
@@ -463,7 +404,6 @@ while(1)
 				    			send_status(stato);				    			
 				    			send_data(net_buf, net_buf.length()); //invio il nome file
 				    			
-				    			send_hmac(net_buf, sd);
 				    			//string fname_hmac = compute_hmac(net_buf); //calcolo e invio l'hmac(nomefile)
 				    			//send_data(fname_hmac, fname_hmac.length());
 				    			
@@ -520,7 +460,7 @@ while(1)
 
 						send_data(net_buf, net_buf.length()); //invio nome al server e attendo conferma per il download
 						
-						send_hmac(net_buf, sd);//string fname_hmac = compute_hmac(net_buf); //calcolo e invio hmac(nomefile)
+						//string fname_hmac = compute_hmac(net_buf); //calcolo e invio hmac(nomefile)
 						//send_data(fname_hmac, fname_hmac.length());
 						
 						recv_seqno(sd);
@@ -555,10 +495,9 @@ while(1)
 						send_status(stato);
 						
 						recvData(sd); //ricevo la lista e la decifro
-						string tmp_lista = net_buf, lista = net_buf;
+						//string tmp_lista = net_buf, 
+						string lista = net_buf;
 						
-						if(!recv_hmac(tmp_lista, sd)) //ricevo hmac(lista+seqno)
-							break;
 						sleep(0.5);
 						cout<<"======= FILE DISPONIBILI ========"<<endl;
 						cout<<lista;
@@ -623,8 +562,9 @@ int check_seqno(uint32_t sr)
 void send_seqno(int sd)
 {
 	if(dbgmode) cout<<"Invio seqno "<<seqno<<" in corso..."<<endl;
+	
 	//invio seqno
-	if(send(sd, (void*)&seqno, sizeof(uint32_t), 0)== -1)
+	if(send(sd, &seqno, sizeof(uint32_t), 0)== -1)
 	{
 		cerr<<"Errore di send(seqno). Codice: "<<errno<<endl;
 		exit(1);
@@ -634,12 +574,15 @@ void send_seqno(int sd)
 void recv_seqno(int sd)
 {
 	if(dbgmode) cout<<"Attendo seqno..."<<endl;
+	int ret;
 	//ricevo numero di sequenza dal client
-	if(recv(sd, &seqno_r, sizeof(uint32_t), 0) == -1)
+	if((ret=recv(sd, &seqno_r, sizeof(uint32_t), 0)) == -1)
 	{
 	    cerr<<"Errore di recv(seqno). Codice: "<<errno<<endl;
 	    exit(1);
 	}
+	cout<<"ret: "<<ret<<endl;
+	cout<<"Ricevuto seqno "<<seqno_r<<endl;
 }
 
 void recv_file(string filename, int new_sd)
@@ -692,16 +635,16 @@ void recv_file(string filename, int new_sd)
 		}
 		seqno++;
 		
-		if((ret = decrypt(ctx_buf, CHUNK, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
-		
 		string app_buf;
-		app_buf.assign(ptx_buf, CHUNK);
+		app_buf.assign(ctx_buf, CHUNK);
 		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
 		{
 			fp.close();
 			remove(filename.c_str()); //elimino il file
 			return;
 		}
+
+		if((ret = decrypt(ctx_buf, CHUNK, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 		
 		ricevuti += n;
 		mancanti -= n;
@@ -741,6 +684,16 @@ void recv_file(string filename, int new_sd)
 			exit(1);
 		}
 		seqno++;
+
+		string app_buf;
+		app_buf.assign(ctx_buf, mancanti);
+		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
+		{
+			if(dbgmode) cout<<"DIGEST_CHECK fallito nella parte mancante!"<<endl;
+			fp.close();
+			remove(filename.c_str()); //elimino il file
+		}
+
 		if((ret = decrypt(ctx_buf, mancanti, ptx_buf))==0) { cerr<<"Errore di decrypt()."<<endl; exit(1); }
 		
 		ricevuti += n;
@@ -749,14 +702,6 @@ void recv_file(string filename, int new_sd)
 		count++;
 		
 		fp.write(ptx_buf, mancanti);
-		string app_buf;
-		app_buf.assign(ptx_buf, mancanti);
-		if(!recv_hmac(app_buf, new_sd)) //ricevo l'hmac di questo pacchetto
-		{
-			if(dbgmode) cout<<"DIGEST_CHECK fallito nella parte mancante!"<<endl;
-			fp.close();
-			remove(filename.c_str()); //elimino il file
-		}
 
 		delete[] ptx_buf;
 		delete[] ctx_buf;
@@ -829,7 +774,7 @@ void send_file()
 		
 		//if(dbgmode) { cout<<"ptx_buf nella send_file() passato per calcolo HMAC: "<<endl; BIO_dump_fp(stdout, (const char*)ptx_buf, mancanti); }
 		string app_buf;
-		app_buf.assign(ptx_buf, CHUNK);
+		app_buf.assign(ctx_buf, CHUNK);
 		send_hmac(app_buf, sd);
 		
 		mancanti -= n;
@@ -863,7 +808,7 @@ void send_file()
 		
 		//if(dbgmode) { cout<<"ptx_buf nella send_file() passato per calcolo HMAC: "<<endl; BIO_dump_fp(stdout, (const char*)ptx_buf, mancanti); }
 		string app_buf;
-		app_buf.assign(ptx_buf, mancanti);
+		app_buf.assign(ctx_buf, mancanti);
 		send_hmac(app_buf, sd);
 		
 		inviati += n;
@@ -894,7 +839,7 @@ void recvData(int sd)
 	
 	recv_seqno(sd);
 	if(check_seqno(seqno_r) == -1) exit(1);
-	
+
 	expected_seqno = seqno;
 	
 	char *tmp_buf = new char[len];
@@ -906,6 +851,11 @@ void recvData(int sd)
 	seqno++;
 	if(!key_handshake) //se la cifratura è abilitata
 	{
+		string app_buf;
+		app_buf.assign(tmp_buf, len);
+		if(!recv_hmac(app_buf, sd)) //ricevo hmac(lista+seqno)
+			exit(1);
+
 		char *ptx_buf = new char[len];
 		if(decrypt(tmp_buf, len, ptx_buf)==0) { cerr<<"Errore di decrypt() nella recvData()"<<endl; exit(1); }
 		net_buf.assign(ptx_buf, len);
@@ -925,7 +875,7 @@ void send_data(string buf, int buf_len)
 
 	lmsg = htons(buf_len);
 	
-	if(send(sd, (void*) &lmsg, sizeof(uint16_t), 0) == -1)
+	if(send(sd, (void*) &lmsg, sizeof(uint32_t), 0) == -1)
 	{
 		cerr<<"Errore di send(size). Codice: "<<errno<<endl;
 		exit(1);
@@ -934,7 +884,7 @@ void send_data(string buf, int buf_len)
 	
 	send_seqno(sd);
 	char *ptx_buf = new char[buf_len]; //+1 ?
-	strcpy(ptx_buf, buf.c_str());
+	memcpy(ptx_buf, buf.data(), buf_len);
 	
 	char *ctx_buf = new char[buf_len];
 	if(encrypt(ptx_buf, buf_len, ctx_buf) == 0) { cerr<<"Errore di encrypt() nella send_data()."<<endl; exit(1); }
@@ -946,6 +896,11 @@ void send_data(string buf, int buf_len)
         }
         seqno++;        
         stato = -1;
+
+	string app_buf;
+	app_buf.assign(ctx_buf, buf_len);
+	send_hmac(app_buf, sd);
+
         delete[] ptx_buf;
         delete[] ctx_buf;
 }
@@ -1149,13 +1104,13 @@ void send_hmac(string buf, int sock)
 	if(dbgmode) cout<<"send_hmac()..."<<endl;
 	send_seqno(sock);
 	
-	//if(dbgmode) { cout<<"Plaintext da firmare: "<<endl; BIO_dump_fp(stdout, (const char*)buf.c_str(), buf.length()); }
+	//if(dbgmode) { cout<<"Ciphertext da firmare: "<<endl; BIO_dump_fp(stdout, (const char*)buf.c_str(), buf.length()); }
 	
 	//calcolo hmac di {messaggio,seqno}, seqno-1 perchè è relativo al MESSAGGIO che era la send precedente a questa
 	string buf_hmac = compute_hmac(buf.append(to_string(seqno-1))); 
 	
 	char *c_buf_hmac = new char[HASH_SIZE];
-	strcpy(c_buf_hmac, buf_hmac.c_str());
+	memcpy(c_buf_hmac, buf_hmac.data(), HASH_SIZE);
 
 	if(send(sock, (void*)c_buf_hmac, HASH_SIZE, 0) == -1)
 	{
@@ -1172,9 +1127,10 @@ void send_hmac(string buf, int sock)
 	delete[] c_buf_hmac;
 }
 
-bool recv_hmac(string plaintext, int sock)
+bool recv_hmac(string ciphertext, int sock)
 {
 	if(dbgmode) cout<<"recv_hmac()..."<<endl;
+	
 	recv_seqno(sock);
 	if(check_seqno(seqno_r) == -1) exit(1);
 	
@@ -1191,9 +1147,9 @@ bool recv_hmac(string plaintext, int sock)
 	net_buf.resize(HASH_SIZE);
 	delete[] c_buf_hmac;
 	
-	plaintext.append(to_string(expected_seqno)); //seqno-1 perchè è relativo al seqno del messaggio che era la recv preced..
+	ciphertext.append(to_string(expected_seqno)); //seqno-1 perchè è relativo al seqno del messaggio che era la recv preced..
 
-	if(!verify_hmac(plaintext, net_buf))
+	if(!verify_hmac(ciphertext, net_buf))
 	{
 		cerr<<"Digest Check fallito!"<<endl;
 		return false;
