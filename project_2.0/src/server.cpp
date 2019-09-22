@@ -578,11 +578,7 @@ void send_data(string buf, int buf_len, int sock)
         seqno++;
 
         if(!key_handshake)
-        {
-        	/*cout<<"ok1"<<endl;
-        	send_seqno(sd);
-        	cout<<"ok2"<<endl;*/
-        	
+        {        	
         	string app;
         	app.assign(ctx_buf, buf_len);
         	h->compute(app, seqno-1);
@@ -628,16 +624,12 @@ void recvData(int sd)
 	
 	if(!key_handshake) //se la cifratura è abilitata
 	{		
-		recv_seqno(sd);
-		if(check_seqno(seqno_r) == -1) exit(1);
-		
 		char *hmac_buf = new char[HASH_SIZE];
 		if(recv(sd, (void*)hmac_buf, HASH_SIZE, MSG_WAITALL) == -1)
 		{
 			cerr<<"Errore in fase di ricezione buffer dati. "<<endl;
 			exit(1);
 		}
-		seqno++;
 		
 		string app;
 		app.assign(hmac_buf, HASH_SIZE);

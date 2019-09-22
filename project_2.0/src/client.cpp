@@ -865,20 +865,13 @@ void recvData(int sd)
 	seqno++;	
 	
 	if(!key_handshake) //se la cifratura è abilitata
-	{
-		/*cout<<"ok1"<<endl;
-		recv_seqno(sd);
-		cout<<"ok2"<<endl;
-		if(check_seqno(seqno_r) == -1) exit(1);*/
-		
+	{		
 		char *hmac_buf = new char[HASH_SIZE];
 		if(recv(sd, (void*)hmac_buf, HASH_SIZE, MSG_WAITALL) == -1)
 		{
 			cerr<<"Errore in fase di ricezione buffer dati. "<<endl;
 			exit(1);
-		}
-		//seqno++;
-		
+		}		
 		string app;
 		app.assign(hmac_buf, HASH_SIZE);
 		delete[] hmac_buf;
@@ -945,16 +938,14 @@ void send_data(string buf, int buf_len)
         {
         	string app;
         	app.assign(ctx_buf, buf_len);
-        	//send_hmac(app, sd);
+
         	h->compute(app, seqno-1);
-        	
-        	send_seqno(sd);
+    
         	if(send(sd, (void*)h->getHmac().c_str(), HASH_SIZE, 0) == -1)
 		{
 			cerr<<"Errore di send(buf). Codice: "<<errno<<endl;
 			exit(1);
 		}
-		seqno++;
         }
         
 	delete[] ctx_buf;      
