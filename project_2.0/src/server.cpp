@@ -168,6 +168,7 @@ bool authorized_client(string name)
 	
 	fstream ff;
 	ff.open(path, ios::in | ios::binary);
+	if(!ff) { cerr<<"Errore fopen()."<<endl; return false; }
 	
 	string line;
 	while(ff >> line)
